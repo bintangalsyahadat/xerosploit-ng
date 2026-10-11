@@ -1,6 +1,8 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import os
+import shutil
+import subprocess
 import sys
 
 #---------------------------------------------------------------------------#
@@ -24,6 +26,10 @@ import sys
 #                                                                           #
 #---------------------------------------------------------------------------#
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+INSTALL_DIR = "/opt/xerosploit"
+LAUNCHER = "/usr/bin/xerosploit"
+
 if not os.geteuid() == 0:
     sys.exit("""\033[1;91m\n[!] Xerosploit installer must be run as root. ¯\_(ツ)_/¯\n\033[1;m""")
 
@@ -34,32 +40,93 @@ print(""" \033[1;36m
 █                                                              █
 └══════════════════════════════════════════════════════════════┘     \033[1;m""")
 
+
+def run_shell(command):
+    print("\033[1;34m\n[++] " + command + "\033[1;m")
+    return subprocess.call(command, shell=True)
+
+
+def have(program):
+    return shutil.which(program) is not None
+
+
+def install_packages():
+    """apt family installer: Kali, Parrot OS, Ubuntu and Debian."""
+    if not have("apt-get"):
+        sys.exit(
+            "\033[1;91m\n[!] This installer only supports apt-based distributions "
+            "(Kali, Parrot OS, Ubuntu, Debian).\033[1;m"
+        )
+
+    run_shell("apt-get update")
+    run_shell("apt-get install -y bettercap nmap hping3 driftnet python3-pip")
+
+
+def install_python_deps():
+    """Prefer the distro packages for tabulate/terminaltables, fall back to pip3."""
+    rc = run_shell("apt-get install -y python3-tabulate python3-terminaltables")
+    if rc != 0:
+        print("\033[1;33m\n[!] apt packages unavailable, falling back to pip3.\033[1;m")
+        run_shell("pip3 install --break-system-packages tabulate terminaltables")
+
+
+def copy_tree():
+    """Copy the tool to /opt/xerosploit.
+
+    tools/bettercap/ (the old bettercap v1 Ruby engine) is intentionally NOT
+    copied: Xerosploit-NG drives bettercap v2 (Go) through lib/engine.py.
+    """
+    if os.path.isdir(INSTALL_DIR):
+        shutil.rmtree(INSTALL_DIR)
+
+    os.makedirs(os.path.join(INSTALL_DIR, "tools", "files"), exist_ok=True)
+    os.makedirs(os.path.join(INSTALL_DIR, "tools", "log"), exist_ok=True)
+    os.makedirs(os.path.join(INSTALL_DIR, "tools", "tmp"), exist_ok=True)
+
+    for name in ("xerosploit.py", "banner.py", "install.py", "LICENSE",
+                 "Makefile", "README.md", "run.sh"):
+        src = os.path.join(BASE_DIR, name)
+        if os.path.exists(src):
+            shutil.copy2(src, os.path.join(INSTALL_DIR, name))
+
+    # lib/ (bettercap v2 engine) and modules/ (proxy JS modules).
+    for directory in ("lib", "modules"):
+        src = os.path.join(BASE_DIR, directory)
+        if os.path.isdir(src):
+            shutil.copytree(src, os.path.join(INSTALL_DIR, directory))
+
+    # tools/files, tools/log, tools/tmp only -- never tools/bettercap.
+    for directory in ("files", "log", "tmp"):
+        src = os.path.join(BASE_DIR, "tools", directory)
+        if os.path.isdir(src):
+            shutil.copytree(src, os.path.join(INSTALL_DIR, "tools", directory))
+
+    if os.path.exists(LAUNCHER):
+        os.remove(LAUNCHER)
+    shutil.copy2(os.path.join(BASE_DIR, "run.sh"), LAUNCHER)
+    os.chmod(LAUNCHER, 0o755)
+
+
 def main():
+    print("\033[1;34m\n[++] Installing Xerosploit ... \033[1;m")
 
-	print("\033[1;34m\n[++] Please choose your operating system.\033[1;m")
+    install_packages()
+    install_python_deps()
+    copy_tree()
 
-	print("""
-1) Ubuntu / Kali linux / Others
-2) Parrot OS
-""")
-	system0 = input(">>> ")
-	if system0 == "1":
-		print("\033[1;34m\n[++] Installing Xerosploit ... \033[1;m")
-		install = os.system("apt-get update && apt-get install -y nmap hping3 build-essential python-pip ruby-dev git libpcap-dev libgmp3-dev && pip install tabulate terminaltables")
+    if not have("bettercap"):
+        print("""\033[1;91m
+[!] bettercap v2 was not found after installation.
+    Some distributions do not ship bettercap v2 in their repositories.
+    Install it manually, for example:
+      Kali Linux : sudo apt-get install bettercap
+      Parrot OS  : sudo apt-get install bettercap
+    Or build it from source: https://github.com/bettercap/bettercap
+\033[1;m""")
 
-		install1 = os.system("""cd tools/bettercap/ && gem build bettercap.* && sudo gem install xettercap-* && rm xettercap-* && cd ../../ && mkdir -p /opt/xerosploit && cp -R tools/ /opt/xerosploit/ && cp xerosploit.py /opt/xerosploit/xerosploit.py && cp banner.py /opt/xerosploit/banner.py && cp run.sh /usr/bin/xerosploit && chmod +x /usr/bin/xerosploit && tput setaf 34; echo "Xerosploit has been sucessfuly instaled. Execute 'xerosploit' in your terminal." """)	
-	elif system0 == "2":
-		print("\033[1;34m\n[++] Installing Xerosploit ... \033[1;m")
+    print("\033[1;32m\n[++] Xerosploit has been successfully installed. "
+          "Execute 'xerosploit' in your terminal.\033[1;m")
 
-		bet_un = os.system("apt-get remove bettercap") # Remove bettercap to avoid some problems . Installed by default with apt-get .
-		bet_re_ins = os.system("gem install bettercap") # Reinstall bettercap with gem.
 
-		install = os.system("apt-get update && apt-get install -y nmap hping3 ruby-dev git libpcap-dev libgmp3-dev python-tabulate python-terminaltables")
-
-		install1 = os.system("""cd tools/bettercap/ && gem build bettercap.* && sudo gem install xettercap-* && rm xettercap-* && cd ../../ && mkdir -p /opt/xerosploit && cp -R tools/ /opt/xerosploit/ && cp xerosploit.py /opt/xerosploit/xerosploit.py && cp banner.py /opt/xerosploit/banner.py && cp run.sh /usr/bin/xerosploit && chmod +x /usr/bin/xerosploit && tput setaf 34; echo "Xerosploit has been sucessfuly instaled. Execute 'xerosploit' in your terminal." """)
-		
-
-	else:
-		print("Please select the option 1 or 2")
-		main()
-main()
+if __name__ == "__main__":
+    main()
