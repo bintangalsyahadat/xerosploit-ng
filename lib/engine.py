@@ -26,9 +26,11 @@
 # bettercap; the UI code (xerosploit.py) must never build bettercap command
 # strings itself.  See docs/PORT-SPEC.md sections 3, 4, 5 and 6.
 
+import ipaddress
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 
@@ -53,6 +55,16 @@ class EngineError(Exception):
     """Raised when the bettercap v2 engine cannot be located or used."""
 
 
+# Grace period (seconds) to let bettercap restore the ARP cache after Ctrl+C
+# before escalating to SIGTERM / SIGKILL.
+_GRACE_SECONDS = 15
+_TERMINATE_SECONDS = 5
+
+# Characters that would break bettercap's ';'-separated -eval command list (or
+# truncate a C string); every value interpolated into a command is checked.
+_FORBIDDEN_CHARS = (";", "\n", "\r", "\0")
+
+
 # ------------------------------------------------------------------------- #
 # Engine discovery and module paths
 # ------------------------------------------------------------------------- #
@@ -72,17 +84,49 @@ def bettercap_bin():
 
 def script(module_file):
     """Absolute path of a proxy JS module under MODULES_DIR."""
-    return os.path.abspath(os.path.join(MODULES_DIR, module_file))
+    _validate(module_file, "module file name")
+    return os.path.abspath(os.path.join(MODULES_DIR, str(module_file)))
 
 
 # ------------------------------------------------------------------------- #
 # Helpers
 # ------------------------------------------------------------------------- #
 
-def _targets_str(targets):
+def _validate(value, what):
+    """Reject values that would break a bettercap '-eval' command list.
+
+    bettercap splits -eval on ';', and a raw newline/NUL would truncate the
+    command, so any value interpolated into a command must be clean.
+    """
+    if value is None:
+        return value
+    text = str(value)
+    for ch in _FORBIDDEN_CHARS:
+        if ch in text:
+            shown = {"\n": "\\n", "\r": "\\r", "\0": "\\0"}.get(ch, ch)
+            raise EngineError(
+                "[!] Invalid %s: it must not contain %r (this would break the "
+                "bettercap command list)." % (what, shown)
+            )
+    return value
+
+
+def require_file(path, what="input file"):
+    """Validate and return the absolute path of an existing regular file."""
+    _validate(path, what)
+    if not path or not os.path.isfile(path):
+        raise EngineError("[!] %s not found: %s" % (what, path))
+    return os.path.abspath(path)
+
+
+def _targets_str(targets, what="target"):
     if isinstance(targets, (list, tuple, set)):
-        return ",".join(str(t) for t in targets)
-    return str(targets)
+        items = [str(t) for t in targets]
+    else:
+        items = [str(targets)]
+    for item in items:
+        _validate(item, what)
+    return ",".join(items)
 
 
 def _js_literal(value):
@@ -95,14 +139,132 @@ def _param_global(name):
 
 
 # ------------------------------------------------------------------------- #
+# Network discovery (used by the UI's "all" target and ARP defaults)
+# ------------------------------------------------------------------------- #
+
+def _run_ip(args):
+    """Run a read-only `ip` command and return its stdout (raises on failure)."""
+    try:
+        proc = subprocess.run(
+            ["ip"] + list(args),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except OSError as exc:
+        raise EngineError("[!] Failed to run 'ip %s': %s" % (" ".join(args), exc))
+    return proc.stdout or ""
+
+
+def _default_iface():
+    for line in _run_ip(["route", "show", "default"]).splitlines():
+        parts = line.split()
+        if "dev" in parts:
+            return parts[parts.index("dev") + 1]
+    return None
+
+
+def _default_gateway(iface=None):
+    args = ["route", "show", "default"]
+    if iface:
+        args += ["dev", str(iface)]
+    for line in _run_ip(args).splitlines():
+        parts = line.split()
+        if "via" in parts:
+            return parts[parts.index("via") + 1]
+    return None
+
+
+def _neighbour_ips(iface):
+    """IPv4 addresses from `ip neigh show dev <iface>`."""
+    ips = []
+    for line in _run_ip(["neigh", "show", "dev", str(iface)]).splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        try:
+            ipaddress.IPv4Address(parts[0])
+        except ValueError:
+            continue
+        ips.append(parts[0])
+    return ips
+
+
+def _iface_ipv4(iface):
+    """Our own IPv4 address on <iface> (or None)."""
+    for line in _run_ip(["-4", "-o", "addr", "show", "dev", str(iface)]).splitlines():
+        parts = line.split()
+        if "inet" in parts:
+            return parts[parts.index("inet") + 1].split("/")[0]
+    return None
+
+
+def _iface_network(iface):
+    """Our IPv4 network in CIDR form, e.g. 192.168.1.5/24 -> 192.168.1.0/24."""
+    for line in _run_ip(["-4", "-o", "addr", "show", "dev", str(iface)]).splitlines():
+        parts = line.split()
+        if "inet" not in parts:
+            continue
+        cidr = parts[parts.index("inet") + 1]
+        try:
+            return str(ipaddress.ip_network(cidr, strict=False))
+        except ValueError:
+            continue
+    return None
+
+
+def all_targets(iface=None):
+    """Expand the UI's "all" command into a concrete bettercap target value.
+
+    Prefers the live neighbour table (excluding our own address and the default
+    gateway); when that is empty, falls back to the interface's IPv4 network in
+    CIDR form.  Raises EngineError when neither can be determined, because
+    bettercap refuses to start arp.spoof with an empty target list.
+    """
+    if iface is None:
+        iface = _default_iface()
+    if not iface:
+        raise EngineError(
+            "[!] Cannot expand 'all': no default network interface was found."
+        )
+
+    own = _iface_ipv4(iface)
+    gateway = _default_gateway(iface)
+    excluded = {addr for addr in (own, gateway) if addr}
+    neighbours = [ip for ip in _neighbour_ips(iface) if ip not in excluded]
+    if neighbours:
+        return ",".join(neighbours)
+
+    network = _iface_network(iface)
+    if network:
+        return network
+
+    raise EngineError(
+        "[!] Cannot expand 'all': no live neighbours and no IPv4 network were "
+        "found on interface %s." % iface
+    )
+
+
+# ------------------------------------------------------------------------- #
 # bettercap v2 command builders -> list[str] of session commands
 # ------------------------------------------------------------------------- #
 
-def arp_spoof(targets, internal=True, fullduplex=True):
-    """ARP spoofing commands.  targets empty/None means the whole subnet."""
-    cmds = []
-    if targets:
-        cmds.append("set arp.spoof.targets " + _targets_str(targets))
+def arp_spoof(targets, internal=False, fullduplex=True):
+    """ARP spoofing commands for an explicit, non-empty target list.
+
+    Empty/None targets raise EngineError instead of silently omitting
+    `set arp.spoof.targets`: bettercap refuses to start arp.spoof without
+    targets ("list of targets is empty, module not starting"), so the old
+    behaviour was a silent no-op.  `internal=False` (the default) keeps the
+    poisoning scoped to target<->gateway; `internal=True` broadens it far
+    beyond that.
+    """
+    if not targets:
+        raise EngineError(
+            "[!] arp.spoof requires at least one target; refusing to start with "
+            "an empty target list (bettercap would not start the module)."
+        )
+    cmds = ["set arp.spoof.targets " + _targets_str(targets, "arp target")]
     if internal:
         cmds.append("set arp.spoof.internal true")
     cmds.append("set arp.spoof.fullduplex " + ("true" if fullduplex else "false"))
@@ -110,20 +272,30 @@ def arp_spoof(targets, internal=True, fullduplex=True):
     return cmds
 
 
-def http_proxy(script=None, injectjs=None, port=8080, sslstrip=False, address=None):
-    """HTTP proxy commands.  `script` is an absolute JS module path and
-    `injectjs` is a file path or raw JavaScript payload (bettercap built-in)."""
+def http_proxy(script=None, port=8080, sslstrip=False, address=None):
+    """HTTP proxy commands.  `script` is an absolute proxy JS module path.
+
+    bettercap's built-in `http.proxy.injectjs` is intentionally NOT used: it
+    consumes the response body and only restores it on an exact lowercase
+    `</head>`, so it can return empty/broken pages.  Injection goes through a
+    real proxy module (`script=`) instead.
+    """
     cmds = []
     if port is not None:
-        cmds.append("set http.proxy.port %d" % int(port))
+        _validate(str(port), "proxy port")
+        try:
+            port_num = int(port)
+        except (TypeError, ValueError):
+            raise EngineError("[!] Invalid proxy port: %r" % (port,))
+        cmds.append("set http.proxy.port %d" % port_num)
     if address:
+        _validate(address, "proxy address")
         cmds.append("set http.proxy.address " + str(address))
     if sslstrip:
         cmds.append("set http.proxy.sslstrip true")
     if script:
+        _validate(script, "proxy script path")
         cmds.append("set http.proxy.script " + str(script))
-    if injectjs:
-        cmds.append("set http.proxy.injectjs " + str(injectjs))
     cmds.append("http.proxy on")
     return cmds
 
@@ -141,6 +313,7 @@ def net_sniff(output=None, local=False, verbose=True):
     """Network sniffer commands, optionally writing a pcap to `output`."""
     cmds = []
     if output:
+        _validate(output, "sniff output path")
         cmds.append("set net.sniff.output " + str(output))
     cmds.append("set net.sniff.local " + ("true" if local else "false"))
     cmds.append("set net.sniff.verbose " + ("true" if verbose else "false"))
@@ -152,14 +325,17 @@ def dns_spoof(domains, address):
     """DNS spoofing commands redirecting `domains` to `address`."""
     cmds = []
     if domains:
-        joined = _targets_str(domains)
+        joined = _targets_str(domains, "dns domain")
         if joined.strip() == "*":
-            # "*" means every domain: bettercap v2 uses dns.spoof.all for that.
+            # `dns.spoof.domains=*` is bettercap's wildcard domain list, while
+            # `dns.spoof.all=true` means "also spoof DNS traffic not addressed
+            # to us"; the latter is the closest equivalent for "every domain".
             cmds.append("set dns.spoof.all true")
         else:
             cmds.append("set dns.spoof.domains " + joined)
             if "*" in joined:
                 cmds.append("set dns.spoof.all true")
+    _validate(address, "dns spoof address")
     cmds.append("set dns.spoof.address " + str(address))
     cmds.append("dns.spoof on")
     return cmds
@@ -192,6 +368,11 @@ def write_runtime_module(module_file, params):
         "var XE_TMP_DIR = " + _js_literal(TMP_DIR) + ";",
     ]
     for key, value in params.items():
+        if isinstance(value, str):
+            _validate(value, "module parameter %s" % key)
+        elif isinstance(value, (list, tuple, set)):
+            for item in value:
+                _validate(item, "module parameter %s" % key)
         lines.append("var " + _param_global(key) + " = " + _js_literal(value) + ";")
     lines.append("// >>> module body below <<<")
 
@@ -214,26 +395,38 @@ def write_runtime_module(module_file, params):
 def run(iface, commands, logfile=None, caplet=None, extra_eval=None):
     """Launch one bettercap session and block until it exits.
 
-    Composes `bettercap -iface <iface> [-caplet <file>] -eval "<cmd; cmd; ...>"`
-    and uses subprocess.call so that Ctrl+C reaches bettercap through the shared
-    foreground process group (letting it restore the ARP cache).  Returns the
-    bettercap exit code.
+    Composes `bettercap -iface <iface> [-autostart ""] [-caplet <file>]
+    -eval "<cmd; cmd; ...>"` and returns the bettercap exit code.
 
-    `logfile` is honoured through bettercap's event stream (`events.stream.output`)
-    because bettercap v2 has no `-log` command line flag (see core/options.go).
+    `logfile` is honoured through bettercap's event stream
+    (`events.stream.output`) because bettercap v2 has no `-log` flag.  Since
+    `-autostart` defaults to `events.stream` and autostart runs *before*
+    `-eval`, a lone `set events.stream.output` in `-eval` would be ignored; when
+    a logfile is requested we therefore pass `-autostart ""` and enable the
+    stream ourselves at the front of the command list.
+
+    Ctrl+C is delivered to bettercap through the shared foreground process
+    group; bettercap then prompts `... quit this session? y/n` on the tty, so we
+    answer `y` to let it restore the ARP cache before timing out.
     """
     argv = [bettercap_bin()]
     if iface:
         argv += ["-iface", str(iface)]
 
     session_commands = list(commands or [])
+    if logfile:
+        _validate(logfile, "log file path")
+        # bettercap v2 has no -log flag; redirect the event stream to the file
+        # instead (modules/events_stream: events.stream.output).  This must run
+        # before the module commands, and -autostart must be disabled because it
+        # would start events.stream before -eval is parsed.
+        session_commands = [
+            "set events.stream.output " + str(logfile),
+            "events.stream on",
+        ] + session_commands
+        argv += ["-autostart", ""]
     if extra_eval:
         session_commands.append(extra_eval)
-    if logfile:
-        # bettercap v2 has no -log flag; redirect the event stream to the file
-        # instead (modules/events_stream: events.stream.output).  The UI tails it.
-        session_commands.append("set events.stream.output " + str(logfile))
-        session_commands.append("events.stream on")
     if caplet:
         argv += ["-caplet", str(caplet)]
     if session_commands:
@@ -241,9 +434,40 @@ def run(iface, commands, logfile=None, caplet=None, extra_eval=None):
 
     sys.stdout.flush()
     sys.stderr.flush()
+
+    # Same process group as us, so the terminal's Ctrl+C reaches bettercap too.
+    proc = subprocess.Popen(argv)
     try:
-        return subprocess.call(argv)
+        return proc.wait()
     except KeyboardInterrupt:
-        # Ctrl+C is delivered to bettercap too (same foreground process group),
-        # so it can restore the ARP cache before exiting.
-        return 130
+        # bettercap is showing its "quit this session? y/n" prompt on the shared
+        # tty; answer yes so it can restore the ARP cache before exiting.
+        print("\n\033[1;34m[++] Telling bettercap to quit and restore the ARP cache ...\033[1;m")
+        sys.stdout.flush()
+        _answer_bettercap_quit_prompt()
+        # Ignore further Ctrl+C while bettercap cleans up, so a second hit
+        # cannot kill the ARP-cache restoration.
+        previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        try:
+            try:
+                return proc.wait(timeout=_GRACE_SECONDS)
+            except subprocess.TimeoutExpired:
+                proc.terminate()
+                try:
+                    return proc.wait(timeout=_TERMINATE_SECONDS)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    return proc.wait()
+        finally:
+            signal.signal(signal.SIGINT, previous)
+
+
+def _answer_bettercap_quit_prompt():
+    """Write "y" to the controlling tty to accept bettercap's quit prompt."""
+    try:
+        with open("/dev/tty", "w") as tty:
+            tty.write("y\n")
+            tty.flush()
+    except OSError:
+        # No controlling tty (e.g. a piped run); fall through to the timeout path.
+        pass

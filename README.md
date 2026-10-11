@@ -88,6 +88,16 @@ type `run` to execute, `back` to return, `home` to go back to the start, or `exi
 The tool works both from the git checkout and from the installed `/opt/xerosploit` location
 (paths are resolved relative to the running script, so no hardcoded absolute path is needed).
 
+### Choosing targets
+
+Type a single target IP (e.g. `192.168.1.10`) or a comma-separated list
+(`192.168.1.10,192.168.1.11`). The `all` command targets the whole network: Xerosploit-NG
+expands it to the live neighbours seen on the selected interface (minus your own address and
+the default gateway), and falls back to the interface's IPv4 network in CIDR form
+(e.g. `192.168.1.0/24`) when the neighbour table is empty. This produces a real
+`arp.spoof.targets` value, avoiding bettercap's "list of targets is empty, module not
+starting" silent no-op.
+
 ### Features
 
 - Port scanning (nmap)
@@ -110,7 +120,7 @@ The tool works both from the git checkout and from the installed `/opt/xerosploi
 | Menu entry | bettercap v2 module |
 |---|---|
 | Inject HTML | `modules/injecthtml.js` |
-| Javascript injection | bettercap built-in `http.proxy.injectjs` (and `modules/injectjs.js`) |
+| Javascript injection | `modules/injectjs.js` (via `http.proxy.script`; not bettercap's built-in `injectjs`) |
 | Shake screen | `modules/shakescreen.js` |
 | Replace Download | `modules/replace_file.js` |
 | Image Replace | `modules/replace_images.js` |
@@ -123,19 +133,44 @@ passthrough for traffic it is not meant to touch.
 
 ---
 
-## HTTPS note
+## HTTPS, HSTS and Content-Security-Policy notes
+
+### Plain HTTP works out of the box
 
 HTML/JavaScript injection, image replacement and defacement only work on plain **HTTP** by
 default, because HTTPS bodies are encrypted end-to-end between the victim and the server.
 
-To apply them over **HTTPS** you must:
+### Full HTTPS interception is opt-in
 
-1. Enable bettercap's HTTPS proxy (`https.proxy on`, optionally with `sslstrip`).
+When you enable `sslstrip` in the **Sniff** module, Xerosploit-NG only turns on
+`http.proxy.sslstrip` (the HTTP downgrade). It does **not** silently start `https.proxy`,
+because doing so breaks HTTPS for any client that does not trust bettercap's CA. Full TLS
+interception is asked for explicitly
+(`Enable full HTTPS interception (needs bettercap CA on the victim)? [y/N]`) and adds
+`https.proxy on` only when you answer `y`.
+
+To make full HTTPS interception work you must:
+
+1. Answer `y` to the full-HTTPS prompt (or add `https.proxy on` yourself).
 2. **Install bettercap's CA certificate on the victim device** and mark it trusted. bettercap
    generates the CA on first use (by default `~/.bettercap-ca.crt`); until the victim trusts
    it, the browser will reject the forged certificates and the injection will not be applied.
 
-Without the CA installed on the victim, HTTPS pages remain opaque to the proxy.
+Limits to keep in mind:
+
+- **HSTS / preload:** sites served with `Strict-Transport-Security` (especially those on the
+  browser HSTS preload list) refuse the downgrade to HTTP for the lifetime of the policy, so
+  sslstrip alone cannot strip them.
+- **No CA installed:** HTTPS pages remain opaque to the proxy; only SNI/DNS metadata is
+  visible.
+- **Certificate pinning / QUIC:** pinned apps and HTTP/3 (QUIC) traffic may bypass or reject
+  the proxy entirely.
+
+### Content-Security-Policy
+
+Even on plain HTTP, injected inline JavaScript and iframes are frequently blocked by a site's
+Content-Security-Policy (`script-src` / `frame-src`), so an injection may have no visible
+effect on hardened pages.
 
 ---
 

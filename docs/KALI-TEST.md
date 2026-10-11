@@ -66,7 +66,7 @@ Then, per module, confirm the expected effect on the victim device:
 |---|---|---|
 | Scan / Port scanning | pick target | nmap output |
 | Sniff | run, choose logs y/n, sslstrip n | captured HTTP creds in the tailed log + `tools/log/*.pcap` |
-| Sniff + sslstrip | sslstrip y | same, plus HTTP downgrade attempts |
+| Sniff + sslstrip | sslstrip y (answer the full-HTTPS prompt n) | same, plus HTTP downgrade attempts |
 | Dns spoof | give redirect IP (e.g. your IP) | victim's DNS names resolve to that IP |
 | Inject Html | point at a local .html | injected markup on victim pages (HTTP) |
 | Deface | point at a local .html | whole page replaced (HTTP) |
@@ -84,10 +84,13 @@ Demo target for creds: `http://testphp.vulnweb.com/login.php` (login `test`/`tes
 These are assumptions in the port that only a live bettercap run can confirm:
 
 1. **`res.ReadBody()` / `res.Body`** semantics in bettercap v2 proxy scripts — the JS modules read the body with `res.ReadBody()` and write back `res.Body`. Confirm an HTML page really gets modified.
-2. **`http.proxy.injectjs`** accepting a local file path (used by Inject Js / Shake screen).
+2. **`modules/injectjs.js` / `modules/shakescreen.js`** loaded via `set http.proxy.script`
+   (bettercap's built-in `http.proxy.injectjs` is no longer used: it consumes the response
+   body and only restores it on an exact lowercase `</head>`, so it can return empty/broken
+   pages).
 3. **`dns.spoof.all true`** for the "all domains" case (Dns spoof passes `["*"]`).
 4. **`set events.stream.output <file>`** is how the log file is produced (bettercap v2 has **no `-log` flag**); confirm the tailed log fills up.
-5. **HTTPS injection** requires bettercap's CA installed on the victim; without it HTTPS stays unreadable (only SNI/DNS).
+5. **HTTPS injection** requires bettercap's CA installed on the victim; without it HTTPS stays unreadable (only SNI/DNS). `https.proxy` is now opt-in (the Sniff module asks before enabling it). HSTS/preload sites and certificate-pinned apps/QUIC resist sslstrip and the forged CA regardless.
 
 ## 5. Cleanup (after each run)
 

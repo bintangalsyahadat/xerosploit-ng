@@ -202,6 +202,41 @@ def check_engine_composition():
             print("  engine.%s() -> %r" % (name, cmds))
 
 
+def check_engine_validation():
+    section("engine validation (empty targets, -eval injection guards)")
+    cases = [
+        ("arp_spoof([])", lambda: engine.arp_spoof([])),
+        ("arp_spoof(None)", lambda: engine.arp_spoof(None)),
+        ("arp_spoof(['1.2.3.4; rm -rf /'])",
+         lambda: engine.arp_spoof(["1.2.3.4; rm -rf /"])),
+        ("http_proxy(address='a;b')", lambda: engine.http_proxy(address="a;b")),
+        ("dns_spoof(['*'], '1.2.3.4\\n')",
+         lambda: engine.dns_spoof(["*"], "1.2.3.4\n")),
+    ]
+    for name, factory in cases:
+        try:
+            factory()
+        except engine.EngineError:
+            ok()
+            print("  %s -> EngineError (expected)" % name)
+        except Exception as exc:  # noqa: BLE001
+            fail("%s raised %r, expected EngineError" % (name, exc))
+        else:
+            fail("%s did not raise" % name)
+
+    # http_proxy must not use bettercap's built-in injectjs anymore.
+    try:
+        cmds = engine.http_proxy(script="/tmp/mod.js")
+    except Exception as exc:  # noqa: BLE001
+        fail("http_proxy(script=...) raised %r" % (exc,))
+    else:
+        if any("injectjs" in c for c in cmds):
+            fail("http_proxy still emits http.proxy.injectjs: %r" % (cmds,))
+        else:
+            ok()
+            print("  http_proxy(script=...) -> %r" % (cmds,))
+
+
 def check_write_runtime_module():
     section("write_runtime_module (temp dirs, no tools/tmp pollution)")
     src_module = os.path.join(BASE_DIR, "modules", "rickroll.js")
@@ -266,6 +301,7 @@ def main():
     check_ast(py_files)
     check_node(js_files)
     check_engine_composition()
+    check_engine_validation()
     check_write_runtime_module()
 
     section("summary")

