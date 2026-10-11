@@ -62,12 +62,29 @@ def install_packages():
     run_shell("apt-get install -y bettercap nmap hping3 driftnet python3-pip")
 
 
+def python_deps_available():
+    """True when tabulate and terminaltables can actually be imported."""
+    return subprocess.call(
+        [sys.executable or "python3", "-c", "import tabulate, terminaltables"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    ) == 0
+
+
 def install_python_deps():
-    """Prefer the distro packages for tabulate/terminaltables, fall back to pip3."""
+    """Prefer the distro packages for tabulate/terminaltables, fall back to pip3.
+
+    These libraries are cosmetic only: xerosploit.py falls back to a built-in
+    table renderer when they are missing, so a failure here is non-fatal.
+    """
     rc = run_shell("apt-get install -y python3-tabulate python3-terminaltables")
     if rc != 0:
         print("\033[1;33m\n[!] apt packages unavailable, falling back to pip3.\033[1;m")
-        run_shell("pip3 install --break-system-packages tabulate terminaltables")
+        rc = run_shell("pip3 install --break-system-packages tabulate terminaltables")
+    if rc != 0 or not python_deps_available():
+        print("\033[1;33m\n[!] Could not install tabulate/terminaltables; "
+              "Xerosploit will use its built-in table renderer instead "
+              "(non-fatal).\033[1;m")
 
 
 def copy_tree():

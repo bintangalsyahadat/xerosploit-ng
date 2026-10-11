@@ -29,8 +29,75 @@ import sys
 import traceback
 from time import sleep
 
-from terminaltables import DoubleTable
-from tabulate import tabulate
+# --------------------------------------------------------------------------- #
+# Optional table-rendering dependencies (terminaltables / tabulate).
+#
+# These libraries are cosmetic and may be absent on an offline / Kali Live box;
+# xerosploit must still start, so fall back to a small built-in renderer instead
+# of dying at import.  When both libraries are importable the real ones are used
+# unchanged (the fallback never shadows a working import).
+# --------------------------------------------------------------------------- #
+
+try:
+	from terminaltables import DoubleTable
+	from tabulate import tabulate
+	_HAVE_TABLE_LIBS = True
+except ImportError:
+	_HAVE_TABLE_LIBS = False
+
+	def _render_table(rows, headers=()):
+		"""Render a plain ASCII grid; ANSI colour codes are left untouched.
+
+		Padding is computed with len(), so coloured cells may shift the borders
+		slightly -- acceptable for a fallback that only needs to be readable.
+		"""
+		body = [[str(cell) for cell in row] for row in rows]
+		if headers:
+			body = [[str(cell) for cell in headers]] + body
+		if not body:
+			return ""
+		columns = max(len(row) for row in body)
+		body = [row + [""] * (columns - len(row)) for row in body]
+		widths = [max(len(row[i]) for row in body) for i in range(columns)]
+		rule = "+" + "+".join("-" * (width + 2) for width in widths) + "+"
+		lines = [rule]
+		for row in body:
+			cells = "|".join(" " + cell.ljust(widths[i]) + " "
+				for i, cell in enumerate(row))
+			lines.append("|" + cells + "|")
+			lines.append(rule)
+		return "\n".join(lines)
+
+	class DoubleTable:
+		"""Minimal stand-in for terminaltables.DoubleTable.
+
+		Exposes the same `.table` attribute the UI reads; the argument is a list
+		of rows, exactly as terminaltables.DoubleTable expects.
+		"""
+
+		def __init__(self, data):
+			self._rows = [[str(cell) for cell in row] for row in data]
+
+		@property
+		def table(self):
+			return _render_table(self._rows)
+
+	def tabulate(data, headers=(), **kwargs):
+		"""Minimal stand-in for tabulate.tabulate.
+
+		Accepts and ignores keyword arguments it does not implement (e.g.
+		`stralign`, `tablefmt`) and honours `headers="firstrow"`.
+		"""
+		rows = [list(row) for row in data]
+		if headers == "firstrow" and rows:
+			return _render_table(rows[1:], headers=rows[0])
+		header = headers if isinstance(headers, (list, tuple)) else ()
+		return _render_table(rows, headers=header)
+
+if not _HAVE_TABLE_LIBS:
+	print("[!] tabulate/terminaltables not found; using the built-in table "
+		"renderer (install python3-tabulate python3-terminaltables for the "
+		"original look).")
 
 from banner import xe_header
 
