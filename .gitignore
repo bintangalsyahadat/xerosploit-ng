@@ -45,3 +45,23 @@ $RECYCLE.BIN/
 Network Trash Folder
 Temporary Items
 .apdisk
+
+
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+
+# =========================
+# Xerosploit-NG runtime data
+# =========================
+# Runtime logs and generated proxy modules are not source; keep the two
+# directories themselves tracked through a .gitkeep negation.
+tools/log/*
+!tools/log/.gitkeep
+tools/tmp/*
+!tools/tmp/.gitkeep
+
+# Generated runtime proxy modules (lib/engine.py::write_runtime_module output)
+tools/tmp/proxy-*.js

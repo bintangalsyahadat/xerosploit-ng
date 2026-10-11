@@ -69,6 +69,10 @@ _    |  /  __/_  /    / /_/ /\033[1;36m____/ / __  /_/ /_  /  / /_/ /_  /  / /_ 
                              \033[1;36m        /_/                               \033[1;m     
 """
 
+# Clear NG branding shown under whichever ASCII art is picked.
+BRANDING = "\n  Xerosploit-NG  ·  Python 3 + bettercap v2 (Go)  ·  GPLv3\n"
+
+
 def xe_header():
     headers = [header1, header2, header3, header4]
-    return random.choice(headers)
+    return random.choice(headers) + BRANDING

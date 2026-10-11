@@ -15,10 +15,12 @@ Xerosploit is a penetration testing toolkit whose goal is to perform man-in-the-
 attacks for testing purposes. It brings various modules that allow to realise efficient
 attacks, and also allows to carry out denial of service attacks and port scanning.
 
-**Xerosploit-NG** revives the original project on modern Linux: the outdated bundled
-**bettercap v1 (Ruby, `xettercap`)** has been removed and replaced by **bettercap v2 (Go)**,
-and the menu/UX has been ported to **Python 3**. It is powered by
-[bettercap](https://www.bettercap.org) and [nmap](https://nmap.org).
+**Xerosploit-NG** is a revived fork of [LionSec/xerosploit](https://github.com/LionSec/xerosploit)
+(continuing the [Neodrix/Xerosploit](https://github.com/Neodrix/Xerosploit) lineage) for modern
+Linux: the outdated bundled **bettercap v1 (Ruby, `xettercap`)** has been removed and replaced by
+**bettercap v2 (Go)**, and the menu/UX has been ported to **Python 3**. It is powered by
+[bettercap](https://www.bettercap.org) and [nmap](https://nmap.org). Xerosploit-NG is distributed
+under the **GNU General Public License v3 (GPLv3)**.
 
 > ⚠️ **Use only against systems you own or are explicitly authorised to test.** MITM attacks
 > disrupt traffic and are illegal without permission.
@@ -150,8 +152,8 @@ See [LICENSE](LICENSE) for the full text.
 
 ## Credits
 
-- **LionSec** — original Xerosploit author (https://lionsec.net)
-- **Neodrix** — Xerosploit maintainer (https://neodrix.com)
+- **LionSec** — original Xerosploit author (https://github.com/LionSec/xerosploit, https://lionsec.net)
+- **Neodrix** — Xerosploit fork and maintainer (https://github.com/Neodrix/Xerosploit, https://neodrix.com)
 - **Simone 'evilsocket' Margaritelli** — bettercap, and the original v1 Ruby proxy modules
   that the `modules/*.js` files are ported from
 

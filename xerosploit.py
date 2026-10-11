@@ -23,6 +23,8 @@
 #---------------------------------------------------------------------------#
 
 import os
+import shlex
+import shutil
 import sys
 import traceback
 from time import sleep
@@ -47,6 +49,41 @@ if not os.geteuid() == 0:
 
 # Exit message
 exit_msg = "\n[++] Shutting down ... Goodbye. ( ^_^)／\n"
+
+# Terminal emulators used to open the sniff-log tailer, in preference order.
+# gnome-terminal and xfce4-terminal separate their child command with `--`,
+# while xterm, x-terminal-emulator and konsole use `-e`.
+TERMINAL_CANDIDATES = (
+	"xterm",
+	"x-terminal-emulator",
+	"gnome-terminal",
+	"konsole",
+	"xfce4-terminal",
+)
+
+
+def terminal_argv(title, shell_command):
+	"""Build the argv of the first available terminal emulator.
+
+	`shell_command` is the colourized tail pipeline to run inside the terminal.
+	Returns None when no supported emulator is installed, so the caller can fall
+	back to tailing in the current terminal instead of crashing.
+	"""
+	for name in TERMINAL_CANDIDATES:
+		path = shutil.which(name)
+		if not path:
+			continue
+		if name in ("gnome-terminal", "xfce4-terminal"):
+			# These take the child command after `--`.
+			return [path, "--title", title, "--", "sh", "-c", shell_command]
+		if name == "konsole":
+			# konsole keeps the window open with --hold and takes -e for command.
+			return [path, "-p", "tabtitle=" + title, "--hold", "-e", "sh", "-c", shell_command]
+		# xterm and x-terminal-emulator: -hold keeps the window open.
+		return [path, "-title", title, "-hold", "-e", "sh", "-c", shell_command]
+	return None
+
+
 def main():
 	try:
 
@@ -473,8 +510,25 @@ def main():
 										date = os.popen("""date | awk '{print $2"-"$3"-"$4}'""").read()
 										filename = target_ips + date
 										filename = filename.replace("\n","")
-										os.system("mkdir -p " + SNIFF_DIR + " && touch " + os.path.join(SNIFF_DIR, filename + ".log"))
-										os.system("""xterm -geometry 100x24 -T 'Xerosploit' -hold -e "tail -f """ + os.path.join(SNIFF_DIR, filename + ".log") + """  | GREP_COLOR='01;36' grep --color=always -E '""" + target_ips +  """|DNS|COOKIE|POST|HEADERS|BODY|HTTPS|HTTP|MQL|SNPP|DHCP|WHATSAPP|RLOGIN|IRC|SNIFFER|PGSQL|NNTP|DICT|HTTPAUTH|TEAMVIEWER|MAIL|SNMP|MPD|NTLMSS|FTP|REDIS|GET|$'" > /dev/null 2>&1 &""")
+										log_path = os.path.join(SNIFF_DIR, filename + ".log")
+										os.system("mkdir -p " + SNIFF_DIR + " && touch " + log_path)
+
+										# bettercap v2 net.sniff emits app-layer events (http, dns, sni, ...);
+										# highlight those plus common HTTP tokens and the target IPs.  The
+										# trailing '|^' is an empty alternative that matches every line, so
+										# grep only COLORIZES matches instead of hiding the rest.
+										highlight = (target_ips +
+											"|sniff|http|https|dns|sni|POST|GET|Cookie|Authorization|Host|User-Agent")
+										pipeline = ("tail -f " + shlex.quote(log_path) +
+											" | grep --color=always -E '" + highlight + "|^'")
+
+										argv = terminal_argv("Xerosploit", pipeline)
+										if argv:
+											os.system(shlex.join(argv) + " > /dev/null 2>&1 &")
+										else:
+											print("\033[1;33m\n[!] No terminal emulator found; tailing in this terminal.\033[1;m")
+											print("\033[1;34m[++] Sniff log: " + log_path + "\033[1;m")
+											os.system(pipeline + " &")
 
 										commands = engine.arp_spoof(target_ips)
 										commands += engine.net_sniff(output=os.path.join(SNIFF_DIR, filename + ".pcap"), local=False)
@@ -927,7 +981,7 @@ deface      :  Overwrite all web pages with your HTML code\n\033[1;m"""]
 						print("\033[1;32m\n[+] Do want to remove all xerosploit logs ? (y/n)\n\033[1;m")
 						cmd_rmlog = input("\033[1;36m\033[4mXero\033[0m»\033[1;36m\033[4mrmlog\033[0m\033[1;36m ➮ \033[1;m").strip()
 						if cmd_rmlog == "y":
-							rmlog = os.system("rm -f -R " + SNIFF_DIR + "/ " + os.path.join(engine.LOG_DIR, "*") + " " + os.path.join(engine.TMP_DIR, "*") + " " + os.path.join(engine.FILES_DIR, "dns.conf"))
+							rmlog = os.system("rm -f -R " + SNIFF_DIR + "/ " + os.path.join(engine.LOG_DIR, "*") + " " + os.path.join(engine.TMP_DIR, "*"))
 							print("\033[1;31m\n[++] All logs have been removed. \n\033[1;m")
 							sleep(1)
 							home()

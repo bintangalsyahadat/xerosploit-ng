@@ -1,0 +1,44 @@
+Xerosploit-NG — NOTICE
+======================
+
+Original project
+----------------
+Xerosploit, by LionSec (https://lionsec.net).
+Upstream: https://github.com/LionSec/xerosploit
+Copyright © 2016 LionSec.
+
+Fork lineage
+------------
+Neodrix/Xerosploit (https://github.com/Neodrix/Xerosploit),
+maintained by Neodrix (https://neodrix.com), Copyright © 2019 Neodrix.
+
+Xerosploit-NG (this repository) is a follow-up revive of that lineage on
+modern Linux.
+
+License
+-------
+Xerosploit-NG is distributed under the GNU General Public License v3 (GPLv3).
+
+Xerosploit-NG is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version.
+
+Xerosploit-NG is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with
+Xerosploit-NG. If not, see <https://www.gnu.org/licenses/>. The full text is in
+the LICENSE file.
+
+Engine change
+-------------
+This fork replaces the bundled bettercap v1 (Ruby) engine with bettercap v2
+(Go), driven through lib/engine.py.
+
+Third-party credits
+-------------------
+bettercap, by Simone 'evilsocket' Margaritelli (https://www.bettercap.org), is
+used as the MITM engine; the original bettercap v1 Ruby proxy modules are the
+source of the ported modules/*.js proxy scripts (GPLv3).
