@@ -257,7 +257,8 @@ def arp_spoof(targets, internal=False, fullduplex=True):
     targets ("list of targets is empty, module not starting"), so the old
     behaviour was a silent no-op.  `internal=False` (the default) keeps the
     poisoning scoped to target<->gateway; `internal=True` broadens it far
-    beyond that.
+    beyond that.  `net.probe on` is always included -- without it bettercap
+    cannot resolve the target MAC and spoofs nothing (see the comment below).
     """
     if not targets:
         raise EngineError(
@@ -268,6 +269,14 @@ def arp_spoof(targets, internal=False, fullduplex=True):
     if internal:
         cmds.append("set arp.spoof.internal true")
     cmds.append("set arp.spoof.fullduplex " + ("true" if fullduplex else "false"))
+    # bettercap turns each target into a MAC by reading the operating system's ARP
+    # table (session.FindMAC -> network.ArpLookup), and the spoofing loop calls that
+    # with probe=false, so a target this host has not exchanged traffic with
+    # recently is dropped from the target map: the module then warns "could not
+    # find spoof targets" every interval while spoofing nothing at all.  net.probe
+    # sends a UDP packet to every address of the interface subnet, which forces the
+    # kernel to ARP-resolve them and fills that table, so start it before arp.spoof.
+    cmds.append("net.probe on")
     cmds.append("arp.spoof on")
     return cmds
 

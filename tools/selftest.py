@@ -176,25 +176,44 @@ def _command_problems(cmds, must_contain=()):
     return problems
 
 
+def _order_problems(cmds, ordered):
+    """Return problems unless every `ordered` token appears in that order.
+
+    Ordering matters for arp_spoof: net.probe must be enabled before arp.spoof
+    starts, or bettercap cannot resolve the target MAC and spoofs nothing.
+    """
+    positions = []
+    for token in ordered:
+        hit = next((i for i, c in enumerate(cmds) if token in c), None)
+        if hit is None:
+            return ["missing %r" % token]
+        positions.append(hit)
+    if positions != sorted(positions):
+        return ["wrong order for %r" % (ordered,)]
+    return []
+
+
 def check_engine_composition():
     section("engine composition")
     builders = [
         ("arp_spoof", lambda: engine.arp_spoof(["1.2.3.4"]),
-         ("set arp.spoof.targets 1.2.3.4", "arp.spoof on")),
+         ("set arp.spoof.targets 1.2.3.4", "net.probe on", "arp.spoof on"),
+         ("net.probe on", "arp.spoof on")),
         ("http_proxy", lambda: engine.http_proxy(),
-         ("set http.proxy.port 8080", "http.proxy on")),
+         ("set http.proxy.port 8080", "http.proxy on"), ()),
         ("net_sniff", lambda: engine.net_sniff(output="/tmp/x.pcap"),
-         ("set net.sniff.output /tmp/x.pcap", "net.sniff on")),
+         ("set net.sniff.output /tmp/x.pcap", "net.sniff on"), ()),
         ("dns_spoof", lambda: engine.dns_spoof(["*"], "1.2.3.4"),
-         ("set dns.spoof.address 1.2.3.4", "dns.spoof on")),
+         ("set dns.spoof.address 1.2.3.4", "dns.spoof on"), ()),
     ]
-    for name, factory, must_contain in builders:
+    for name, factory, must_contain, ordered in builders:
         try:
             cmds = factory()
         except Exception as exc:  # noqa: BLE001
             fail("engine.%s() raised %r" % (name, exc))
             continue
         problems = _command_problems(cmds, must_contain)
+        problems += _order_problems(cmds, ordered)
         if problems:
             fail("engine.%s(): %s (%r)" % (name, "; ".join(problems), cmds))
         else:
