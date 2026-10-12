@@ -25,6 +25,7 @@
 import os
 import shlex
 import shutil
+import subprocess
 import sys
 import traceback
 from time import sleep
@@ -132,7 +133,9 @@ TERMINAL_CANDIDATES = (
 def terminal_argv(title, shell_command):
 	"""Build the argv of the first available terminal emulator.
 
-	`shell_command` is the colourized tail pipeline to run inside the terminal.
+	The flag style is chosen from the *real* executable behind the candidate
+	(resolving symlinks and Debian `.wrapper` scripts), not from the candidate
+	name -- `x-terminal-emulator` commonly points at `gnome-terminal.wrapper`.
 	Returns None when no supported emulator is installed, so the caller can fall
 	back to tailing in the current terminal instead of crashing.
 	"""
@@ -140,15 +143,56 @@ def terminal_argv(title, shell_command):
 		path = shutil.which(name)
 		if not path:
 			continue
-		if name in ("gnome-terminal", "xfce4-terminal"):
-			# These take the child command after `--`.
-			return [path, "--title", title, "--", "sh", "-c", shell_command]
-		if name == "konsole":
+		ident = os.path.basename(os.path.realpath(path))
+		is_wrapper = ident.endswith(".wrapper")
+		if is_wrapper:
+			ident = ident[:-len(".wrapper")]
+		if ident == "konsole":
 			# konsole keeps the window open with --hold and takes -e for command.
 			return [path, "-p", "tabtitle=" + title, "--hold", "-e", "sh", "-c", shell_command]
-		# xterm and x-terminal-emulator: -hold keeps the window open.
+		if ident == "gnome-terminal":
+			if is_wrapper:
+				# Debian's x-terminal-emulator wrapper is an xterm-compatible shim
+				# that only understands the legacy -title/-e flags; it silently
+				# drops the --title style, so keep the legacy form for wrappers.
+				return [path, "-title", title, "-hold", "-e", "sh", "-c", shell_command]
+			return [path, "--title", title, "--", "sh", "-c", shell_command]
+		if ident == "xfce4-terminal":
+			# xfce4-terminal wants --title and separates the child with `--`.
+			return [path, "--title", title, "--", "sh", "-c", shell_command]
+		# xterm and any unknown fallback: -hold keeps the window open.
 		return [path, "-title", title, "-hold", "-e", "sh", "-c", shell_command]
 	return None
+
+
+def launch_terminal(argv):
+	"""Launch a terminal emulator and report an early failure.
+
+	Starts `argv` (a list, no shell) with stdout discarded and stderr captured,
+	then waits briefly for it to reject its arguments.  Returns (ok, stderr):
+	`ok` is False only when the process exited within the grace period with a
+	non-zero status.  A still-running process, or a zero exit status (the usual
+	client/server handoff for gnome-terminal), counts as a successful launch.
+	"""
+	try:
+		proc = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+	except OSError as exc:
+		return False, str(exc)
+	try:
+		proc.wait(timeout=1.5)
+	except subprocess.TimeoutExpired:
+		return True, ""
+	if proc.returncode == 0:
+		return True, ""
+	err = b""
+	if proc.stderr is not None:
+		try:
+			err = proc.stderr.read()
+		except OSError:
+			err = b""
+		finally:
+			proc.stderr.close()
+	return False, err.decode("utf-8", "replace")
 
 
 def require_input_file(path, what, retry):
@@ -619,10 +663,19 @@ def main():
 											" | grep --color=always -E '" + highlight + "|^'")
 
 										argv = terminal_argv("Xerosploit", pipeline)
-										if argv:
-											os.system(shlex.join(argv) + " > /dev/null 2>&1 &")
-										else:
-											print("\033[1;33m\n[!] No terminal emulator found; tailing in this terminal.\033[1;m")
+										ok = False
+										err = ""
+										if argv and os.environ.get("DISPLAY"):
+											ok, err = launch_terminal(argv)
+										if not ok:
+											if not argv:
+												print("\033[1;33m\n[!] No terminal emulator found; tailing in this terminal.\033[1;m")
+											elif not os.environ.get("DISPLAY"):
+												print("\033[1;33m\n[!] DISPLAY is not set; tailing in this terminal.\033[1;m")
+											else:
+												print("\033[1;33m\n[!] Terminal emulator failed to start; tailing in this terminal.\033[1;m")
+												if err.strip():
+													print("\033[1;33m[!] " + err.strip() + "\033[1;m")
 											print("\033[1;34m[++] Sniff log: " + log_path + "\033[1;m")
 											os.system(pipeline + " &")
 
