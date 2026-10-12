@@ -110,13 +110,13 @@ def copy_tree():
     for directory in ("lib", "modules"):
         src = os.path.join(BASE_DIR, directory)
         if os.path.isdir(src):
-            shutil.copytree(src, os.path.join(INSTALL_DIR, directory))
+            shutil.copytree(src, os.path.join(INSTALL_DIR, directory), dirs_exist_ok=True)
 
     # tools/files, tools/log, tools/tmp only -- never tools/bettercap.
     for directory in ("files", "log", "tmp"):
         src = os.path.join(BASE_DIR, "tools", directory)
         if os.path.isdir(src):
-            shutil.copytree(src, os.path.join(INSTALL_DIR, "tools", directory))
+            shutil.copytree(src, os.path.join(INSTALL_DIR, "tools", directory), dirs_exist_ok=True)
 
     if os.path.exists(LAUNCHER):
         os.remove(LAUNCHER)
