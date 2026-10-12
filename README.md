@@ -58,7 +58,7 @@ installation as non-fatal.
 ## Installation
 
 ```bash
-git clone https://github.com/<your-github-username>/xerosploit-ng.git
+git clone https://github.com/bintangalsyahadat/xerosploit-ng.git
 cd xerosploit-ng
 sudo python3 install.py
 ```
