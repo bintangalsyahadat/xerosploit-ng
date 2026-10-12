@@ -119,14 +119,17 @@ if not os.geteuid() == 0:
 exit_msg = "\n[++] Shutting down ... Goodbye. ( ^_^)／\n"
 
 # Terminal emulators used to open the sniff-log tailer, in preference order.
-# gnome-terminal and xfce4-terminal separate their child command with `--`,
-# while xterm, x-terminal-emulator and konsole use `-e`.
+# The flag style is decided from the *real* executable (see terminal_argv), so a
+# Debian alternative such as x-terminal-emulator -- which resolves to
+# gnome-terminal.wrapper on Mint, xfce4-terminal.wrapper on Debian Xfce and
+# qterminal on Kali -- is handled by its actual emulator, not by the wrapper name.
 TERMINAL_CANDIDATES = (
 	"xterm",
 	"x-terminal-emulator",
 	"gnome-terminal",
 	"konsole",
 	"xfce4-terminal",
+	"qterminal",
 )
 
 
@@ -135,7 +138,8 @@ def terminal_argv(title, shell_command):
 
 	The flag style is chosen from the *real* executable behind the candidate
 	(resolving symlinks and Debian `.wrapper` scripts), not from the candidate
-	name -- `x-terminal-emulator` commonly points at `gnome-terminal.wrapper`.
+	name -- `x-terminal-emulator` points at `gnome-terminal.wrapper` on Mint, at
+	`xfce4-terminal.wrapper` on Debian Xfce and at `qterminal` on Kali.
 	Returns None when no supported emulator is installed, so the caller can fall
 	back to tailing in the current terminal instead of crashing.
 	"""
@@ -151,15 +155,20 @@ def terminal_argv(title, shell_command):
 			# konsole keeps the window open with --hold and takes -e for command.
 			return [path, "-p", "tabtitle=" + title, "--hold", "-e", "sh", "-c", shell_command]
 		if ident == "gnome-terminal":
+			# The Debian x-terminal-emulator shim is xterm-compatible and silently
+			# drops the --title/-- style, while the real binary wants exactly that.
 			if is_wrapper:
-				# Debian's x-terminal-emulator wrapper is an xterm-compatible shim
-				# that only understands the legacy -title/-e flags; it silently
-				# drops the --title style, so keep the legacy form for wrappers.
 				return [path, "-title", title, "-hold", "-e", "sh", "-c", shell_command]
 			return [path, "--title", title, "--", "sh", "-c", shell_command]
 		if ident == "xfce4-terminal":
-			# xfce4-terminal wants --title and separates the child with `--`.
-			return [path, "--title", title, "--", "sh", "-c", shell_command]
+			# Neither the real binary nor the Debian wrapper accepts a bare `--`;
+			# `-e` with one pre-quoted shell string is the only form both understand.
+			return [path, "-T", title, "-e", "sh -c " + shlex.quote(shell_command)]
+		if ident == "qterminal":
+			# Kali: x-terminal-emulator -> qterminal.  It has no title option and no
+			# hold, and treats unknown options as a hard error, so pass only -e (its
+			# -e takes the command followed by raw argv, konsole-style).
+			return [path, "-e", "sh", "-c", shell_command]
 		# xterm and any unknown fallback: -hold keeps the window open.
 		return [path, "-title", title, "-hold", "-e", "sh", "-c", shell_command]
 	return None
