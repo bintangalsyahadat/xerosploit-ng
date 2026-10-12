@@ -599,10 +599,13 @@ def main():
 										print("\033[1;34m\n[++] Press 'Ctrl + C' to stop . \n\033[1;m")
 
 										date = os.popen("""date | awk '{print $2"-"$3"-"$4}'""").read()
-										filename = target_ips + date
 										# target_ips can be a CIDR ("192.168.1.0/24") or a comma separated
-										# list; keep the name a single, safe path segment.
-										filename = filename.replace("\n","").replace("/", "_").replace(",", "_")
+										# list; keep the name a single, filesystem-safe segment.  '/' and
+										# ',' would break the path, and ':' from the clock time is not
+										# allowed on exfat (e.g. when the repo runs off a Ventoy USB).
+										filename = (target_ips + "_" + date).strip()
+										filename = (filename.replace("/", "_").replace(",", "_")
+											.replace(":", "-").replace(" ", "_"))
 										log_path = os.path.join(SNIFF_DIR, filename + ".log")
 										os.system("mkdir -p " + SNIFF_DIR + " && touch " + log_path)
 

@@ -36,9 +36,11 @@ Xerosploit-NG relies on the following tools (installed automatically by `install
 - **hping3** — Denial of Service module
 - **driftnet** — image sniffing
 - **python3** (3.9+) with **pip3**
-- **tabulate** and **terminaltables** (Python libraries used by the menu)
 
-No other dependencies are required.
+**`tabulate` and `terminaltables` are optional.** They are used only for the menu's table
+output. When they are absent the tool still starts: `xerosploit.py` prints a single warning
+and renders the tables with a built-in ASCII renderer, and `install.py` treats their
+installation as non-fatal.
 
 ---
 
@@ -55,14 +57,24 @@ No other dependencies are required.
 
 ## Installation
 
+This fork does not have a public remote configured yet, so obtain the source from
+`<xerosploit-ng-repository-url>` (a local checkout copy works identically):
+
 ```bash
-git clone https://github.com/LionSec/xerosploit
-cd xerosploit
+git clone <xerosploit-ng-repository-url>
+cd xerosploit-ng
 sudo python3 install.py
 ```
 
 The installer installs the dependencies, copies the tree to `/opt/xerosploit`, and installs
 the `xerosploit` launcher into `/usr/bin`.
+
+No install step is required to run from the checkout — the paths are resolved relative to the
+running script:
+
+```bash
+sudo python3 xerosploit.py
+```
 
 Packagers can use the Makefile instead:
 
@@ -98,6 +110,18 @@ the default gateway), and falls back to the interface's IPv4 network in CIDR for
 `arp.spoof.targets` value, avoiding bettercap's "list of targets is empty, module not
 starting" silent no-op.
 
+### Sniff prompts and output
+
+The **Sniff** module asks two questions in order — `Do you want to save logs ? (y/n).` then
+`Do you want to load sslstrip ? (y/n).`. When you answer `y` to sslstrip, a third prompt
+appears: `Enable full HTTPS interception (needs bettercap CA on the victim)? [y/N]` — the
+default is `n`, and `https.proxy on` is added only when you answer `y`.
+
+Sniffing output is written to `xerosniff/` in the repo root: a `<target>_<date>.pcap` capture
+plus the matching `<target>_<date>.log` event stream, and the run prints
+`All logs are saved on : <xerosniff path>`. The scanning modules (Scan, Port scanning, Ping)
+keep their plain-text logs separately, under `tools/log/` (`scan.txt`, `pscan.txt`, `ping.txt`).
+
 ### Features
 
 - Port scanning (nmap)
@@ -130,6 +154,10 @@ starting" silent no-op.
 The `modules/*.js` files are bettercap v2 HTTP-proxy scripts. Their parameters are supplied
 through generated `XE_*` globals so nothing is hardcoded, and each module is a strict
 passthrough for traffic it is not meant to touch.
+
+The content-injection modules (Inject HTML, Deface, Inject JS, Replace Download, Replace
+Images) ask for a **local file path** at prompt time; `tools/files/` is the conventional place
+to keep those input files.
 
 ---
 

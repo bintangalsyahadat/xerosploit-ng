@@ -37,6 +37,13 @@ sudo apt-get install -y bettercap nmap hping3 driftnet
 sudo python3 install.py          # copies to /opt/xerosploit, launcher /usr/bin/xerosploit
 ```
 
+`install.py` is only needed for the `/opt/xerosploit` + `/usr/bin/xerosploit` install. You can
+also run directly from the checkout (no install step):
+
+```bash
+sudo python3 xerosploit.py
+```
+
 Sanity checks:
 
 ```bash
@@ -65,7 +72,7 @@ Then, per module, confirm the expected effect on the victim device:
 | Menu module | How to run | Expected evidence |
 |---|---|---|
 | Scan / Port scanning | pick target | nmap output |
-| Sniff | run, choose logs y/n, sslstrip n | captured HTTP creds in the tailed log + `tools/log/*.pcap` |
+| Sniff | run, choose logs y/n, sslstrip n | captured HTTP creds in the tailed log + `xerosniff/<target>_<date>.pcap` (with the matching `.log`) |
 | Sniff + sslstrip | sslstrip y (answer the full-HTTPS prompt n) | same, plus HTTP downgrade attempts |
 | Dns spoof | give redirect IP (e.g. your IP) | victim's DNS names resolve to that IP |
 | Inject Html | point at a local .html | injected markup on victim pages (HTTP) |
