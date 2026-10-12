@@ -65,3 +65,6 @@ tools/tmp/*
 
 # Generated runtime proxy modules (lib/engine.py::write_runtime_module output)
 tools/tmp/proxy-*.js
+
+# Sniff capture output (net.sniff writes <target>_<date>.log/.pcap here)
+xerosniff/
