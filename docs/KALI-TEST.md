@@ -8,26 +8,24 @@ This is a self-run checklist; the tool has only been statically verified off-Kal
 * Python 3 only; the bundled bettercap v1 (`xettercap`, Ruby) is gone.
 * All MITM/injection now runs on **bettercap v2 (Go)** via `lib/engine.py`.
 * `modules/*.js` are bettercap v2 proxy scripts; params are injected as `XE_*` globals.
-* Repo: `xerosploit-ng/` (local). No git remote yet.
 
 ## 1. Get the code onto Kali
 
-The dev repo lives on the Mint machine. Easiest transfer to a Kali Live session:
+Get the code onto the Kali machine either by cloning the repository, or by copying an
+existing checkout over on a USB stick:
 
 ```bash
-# on Mint: copy the repo to the Ventoy exfat partition
-cp -r ~/Documents/opencode/xerosploit-ng /media/bintang/Ventoy/
-sync
+# option A - clone the repository
+git clone https://github.com/<your-github-username>/xerosploit-ng.git
+cd xerosploit-ng
 ```
 
 ```bash
-# in Kali Live: copy it off the USB to a writable place and check what you got
-ls /media/kali/Ventoy/            # find the Ventoy partition device/label
-cp -r /media/kali/Ventoy/xerosploit-ng ~/xerosploit-ng
+# option B - copy a checkout onto a USB stick, then in Kali Live:
+ls <usb-mount>/                     # find the USB partition device/label
+cp -r <usb-mount>/xerosploit-ng ~/xerosploit-ng
 cd ~/xerosploit-ng
 ```
-
-(If you set up a git remote later, `git clone` is equivalent.)
 
 ## 2. Install
 
@@ -56,8 +54,8 @@ python3 -m py_compile /opt/xerosploit/xerosploit.py /opt/xerosploit/lib/engine.p
 ```bash
 ip -4 addr ; ip route           # find the Wi-Fi iface name + your IP (Kali usually wlan0)
 sudo ip link set <iface> up
-# find the victim (e.g. the Redmi)
-nmap -sn 192.168.1.0/24
+# find the victim host
+nmap -sn <lan-cidr>
 ip neigh show dev <iface>
 ```
 
@@ -114,7 +112,7 @@ Capture the exact `bettercap` command engine built:
 ```bash
 python3 - <<'PY'
 import sys; sys.path.insert(0, "lib"); import engine
-print(engine.arp_spoof(["192.168.1.4"]))
+print(engine.arp_spoof(["<victim-ip>"]))
 print(engine.http_proxy(script=engine.script("injecthtml.js")))
 PY
 ```

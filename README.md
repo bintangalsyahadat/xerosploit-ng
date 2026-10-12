@@ -57,14 +57,13 @@ installation as non-fatal.
 
 ## Installation
 
-This fork does not have a public remote configured yet, so obtain the source from
-`<xerosploit-ng-repository-url>` (a local checkout copy works identically):
-
 ```bash
-git clone <xerosploit-ng-repository-url>
+git clone https://github.com/<your-github-username>/xerosploit-ng.git
 cd xerosploit-ng
 sudo python3 install.py
 ```
+
+If you already have a local checkout, run the same commands from that directory.
 
 The installer installs the dependencies, copies the tree to `/opt/xerosploit`, and installs
 the `xerosploit` launcher into `/usr/bin`.
