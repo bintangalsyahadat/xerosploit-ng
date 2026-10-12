@@ -118,3 +118,34 @@ PY
 ```
 
 Then run that command manually and read bettercap's error (unknown parameter, missing script, etc.).
+
+## 7. Target and ARP troubleshooting
+
+`arp.spoof` can only spoof a target that bettercap can resolve to a MAC, and bettercap
+resolves it from the operating system's ARP table — it does not probe for you. A target
+that is offline, asleep, or has left the network therefore logs this every interval
+while nothing is actually spoofed:
+
+```text
+[war] arp.spoof could not find spoof targets
+```
+
+Diagnose in this order, from another terminal while the tool runs:
+
+```bash
+ping -c3 -W2 <victim-ip>            # patient: a first-touch ARP can exceed a -W1 timeout
+ip neigh show dev <iface>           # the victim must appear there with its MAC
+ping -c2 -W2 <gateway-ip>           # control: ARP itself has to work
+nmap -sn <lan-cidr>                 # is the victim still on the network at all?
+```
+
+* The victim appears in `ip neigh` (REACHABLE/STALE) -> the spoof will engage; the engine
+  enables `net.probe`, which keeps that table filled.
+* Victim absent or `FAILED`, while the gateway and another client answer -> that host is
+  gone (or asleep); pick a target that is currently up. `Destination Host Unreachable`
+  reported from your own IP means your kernel could not resolve the MAC, not that the
+  host refused ICMP.
+* The gateway answers but no client does -> the access point isolates clients (common on
+  guest/office Wi-Fi) and ARP spoofing cannot work there.
+* A `scan` listing goes stale within minutes (sleep, DHCP, randomised MACs), so re-check
+  that the target is up right before running a module.
