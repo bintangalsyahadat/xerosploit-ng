@@ -398,10 +398,123 @@ def write_runtime_module(module_file, params):
 
 
 # ------------------------------------------------------------------------- #
+# Packet capture sniffer helper (PORT-SPEC section 3 & 4)
+# ------------------------------------------------------------------------- #
+
+def sniffer_bin():
+    """Return (name, path) of the best available packet capture tool, or (None, None)."""
+    for candidate in ("tcpdump", "dumpcap"):
+        path = shutil.which(candidate)
+        if path:
+            return candidate, path
+    return None, None
+
+
+def build_bpf_filter(targets):
+    """Convert targets (IP, CIDR, or list/comma-separated) to a BPF filter expression."""
+    if not targets:
+        return ""
+    if isinstance(targets, (list, tuple, set)):
+        raw_items = [str(t).strip() for t in targets]
+    else:
+        raw_items = [str(targets).strip()]
+    items = []
+    for raw in raw_items:
+        for sub in raw.split(","):
+            sub = sub.strip()
+            if sub:
+                items.append(sub)
+    if not items:
+        return ""
+    parts = []
+    for item in items:
+        if "/" in item:
+            parts.append("net " + item)
+        else:
+            parts.append("host " + item)
+    if len(parts) == 1:
+        return parts[0]
+    return " or ".join(parts)
+
+
+def _start_sniffer(iface, output, targets=None):
+    """Start an external packet capture process writing to `output`.
+
+    Bettercap v2.41+ has a known upstream bug in its pcapng writer (interface index
+    mismatch) which causes `net.sniff.output` to produce empty 124-byte pcap files
+    on modern Linux distributions. Running tcpdump/dumpcap alongside bettercap
+    ensures packet captures are complete, uncorrupted and reliable.
+    """
+    if not output:
+        return None
+    name, path = sniffer_bin()
+    if not name:
+        sys.stderr.write(
+            "\033[1;33m[!] Warning: neither tcpdump nor dumpcap found; "
+            "pcap file capture will be skipped.\033[1;m\n"
+        )
+        return None
+
+    parent = os.path.dirname(os.path.abspath(output))
+    os.makedirs(parent, exist_ok=True)
+
+    bpf = build_bpf_filter(targets)
+
+    if name == "tcpdump":
+        argv = [path, "-U", "-s", "0"]
+        if os.geteuid() == 0:
+            argv += ["-Z", "root"]
+        if iface:
+            argv += ["-i", str(iface)]
+        argv += ["-w", str(output)]
+        if bpf:
+            argv.append(bpf)
+    else:
+        argv = [path]
+        if iface:
+            argv += ["-i", str(iface)]
+        argv += ["-w", str(output)]
+        if bpf:
+            argv += ["-f", bpf]
+
+    try:
+        proc = subprocess.Popen(
+            argv,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return proc
+    except Exception as exc:
+        sys.stderr.write(
+            "\033[1;33m[!] Warning: failed to launch %s: %s\033[1;m\n" % (name, exc)
+        )
+        return None
+
+
+def _stop_sniffer(proc):
+    """Gracefully terminate a packet capture process and ensure output is flushed."""
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        proc.send_signal(signal.SIGINT)
+        proc.wait(timeout=2)
+    except (subprocess.TimeoutExpired, OSError):
+        try:
+            proc.terminate()
+            proc.wait(timeout=1)
+        except (subprocess.TimeoutExpired, OSError):
+            try:
+                proc.kill()
+                proc.wait(timeout=1)
+            except OSError:
+                pass
+
+
+# ------------------------------------------------------------------------- #
 # Runner
 # ------------------------------------------------------------------------- #
 
-def run(iface, commands, logfile=None, caplet=None, extra_eval=None):
+def run(iface, commands, logfile=None, caplet=None, extra_eval=None, pcap_output=None, pcap_targets=None):
     """Launch one bettercap session and block until it exits.
 
     Composes `bettercap -iface <iface> [-autostart ""] [-caplet <file>]
@@ -413,6 +526,9 @@ def run(iface, commands, logfile=None, caplet=None, extra_eval=None):
     `-eval`, a lone `set events.stream.output` in `-eval` would be ignored; when
     a logfile is requested we therefore pass `-autostart ""` and enable the
     stream ourselves at the front of the command list.
+
+    `pcap_output`, when given, triggers a companion packet capture using
+    tcpdump/dumpcap scoped to `pcap_targets` and flushed upon exit.
 
     Ctrl+C is delivered to bettercap through the shared foreground process
     group; bettercap then prompts `... quit this session? y/n` on the tty, so we
@@ -444,31 +560,38 @@ def run(iface, commands, logfile=None, caplet=None, extra_eval=None):
     sys.stdout.flush()
     sys.stderr.flush()
 
-    # Same process group as us, so the terminal's Ctrl+C reaches bettercap too.
-    proc = subprocess.Popen(argv)
+    sniffer_proc = None
+    if pcap_output:
+        sniffer_proc = _start_sniffer(iface, pcap_output, pcap_targets)
+
     try:
-        return proc.wait()
-    except KeyboardInterrupt:
-        # bettercap is showing its "quit this session? y/n" prompt on the shared
-        # tty; answer yes so it can restore the ARP cache before exiting.
-        print("\n\033[1;34m[++] Telling bettercap to quit and restore the ARP cache ...\033[1;m")
-        sys.stdout.flush()
-        _answer_bettercap_quit_prompt()
-        # Ignore further Ctrl+C while bettercap cleans up, so a second hit
-        # cannot kill the ARP-cache restoration.
-        previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        # Same process group as us, so the terminal's Ctrl+C reaches bettercap too.
+        proc = subprocess.Popen(argv)
         try:
+            return proc.wait()
+        except KeyboardInterrupt:
+            # bettercap is showing its "quit this session? y/n" prompt on the shared
+            # tty; answer yes so it can restore the ARP cache before exiting.
+            print("\n\033[1;34m[++] Telling bettercap to quit and restore the ARP cache ...\033[1;m")
+            sys.stdout.flush()
+            _answer_bettercap_quit_prompt()
+            # Ignore further Ctrl+C while bettercap cleans up, so a second hit
+            # cannot kill the ARP-cache restoration.
+            previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
             try:
-                return proc.wait(timeout=_GRACE_SECONDS)
-            except subprocess.TimeoutExpired:
-                proc.terminate()
                 try:
-                    return proc.wait(timeout=_TERMINATE_SECONDS)
+                    return proc.wait(timeout=_GRACE_SECONDS)
                 except subprocess.TimeoutExpired:
-                    proc.kill()
-                    return proc.wait()
-        finally:
-            signal.signal(signal.SIGINT, previous)
+                    proc.terminate()
+                    try:
+                        return proc.wait(timeout=_TERMINATE_SECONDS)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        return proc.wait()
+            finally:
+                signal.signal(signal.SIGINT, previous)
+    finally:
+        _stop_sniffer(sniffer_proc)
 
 
 def _answer_bettercap_quit_prompt():
@@ -476,7 +599,8 @@ def _answer_bettercap_quit_prompt():
     try:
         with open("/dev/tty", "w") as tty:
             tty.write("y\n")
-            tty.flush()
+        tty.flush()
     except OSError:
         # No controlling tty (e.g. a piped run); fall through to the timeout path.
         pass
+

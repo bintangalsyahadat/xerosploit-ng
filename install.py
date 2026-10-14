@@ -59,7 +59,7 @@ def install_packages():
         )
 
     run_shell("apt-get update")
-    run_shell("apt-get install -y bettercap nmap hping3 driftnet python3-pip")
+    run_shell("apt-get install -y bettercap tcpdump nmap hping3 driftnet python3-pip")
 
 
 def python_deps_available():

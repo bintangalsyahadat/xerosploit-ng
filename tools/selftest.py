@@ -301,6 +301,32 @@ def check_write_runtime_module():
             print("  wrote %s" % out_path)
 
 
+def check_sniffer_helpers():
+    section("packet sniffer helpers (bpf filter and discovery)")
+    cases = [
+        ("single host", "192.168.1.10", "host 192.168.1.10"),
+        ("subnet CIDR", "192.168.1.0/24", "net 192.168.1.0/24"),
+        ("comma hosts", "192.168.1.1, 192.168.1.2", "host 192.168.1.1 or host 192.168.1.2"),
+        ("list mixed", ["10.0.0.1", "172.16.0.0/16"], "host 10.0.0.1 or net 172.16.0.0/16"),
+        ("empty/none", None, ""),
+    ]
+    for label, target, expected in cases:
+        bpf = engine.build_bpf_filter(target)
+        if bpf != expected:
+            fail("build_bpf_filter(%r) -> %r, expected %r" % (target, bpf, expected))
+        else:
+            ok()
+            print("  build_bpf_filter(%s) -> %r" % (label, bpf))
+
+    name, path = engine.sniffer_bin()
+    if name:
+        ok()
+        print("  found sniffer: %s at %s" % (name, path))
+    else:
+        SKIPS.append("neither tcpdump nor dumpcap found in PATH")
+
+
+
 # ------------------------------------------------------------------------- #
 # Entry point
 # ------------------------------------------------------------------------- #
@@ -322,6 +348,7 @@ def main():
     check_engine_composition()
     check_engine_validation()
     check_write_runtime_module()
+    check_sniffer_helpers()
 
     section("summary")
     for message in SKIPS:

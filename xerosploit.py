@@ -688,15 +688,22 @@ def main():
 											print("\033[1;34m[++] Sniff log: " + log_path + "\033[1;m")
 											os.system(pipeline + " &")
 
+										pcap_path = os.path.join(SNIFF_DIR, filename + ".pcap")
 										commands = engine.arp_spoof(target_ips)
-										commands += engine.net_sniff(output=os.path.join(SNIFF_DIR, filename + ".pcap"), local=False)
+										commands += engine.net_sniff(local=False)
 										if use_sslstrip:
 											commands += engine.http_proxy(sslstrip=True)
 											if use_https_mitm:
 												commands += engine.https_proxy()
 										else:
 											commands += engine.http_proxy()
-										engine.run(up_interface, commands, logfile=os.path.join(SNIFF_DIR, filename + ".log"))
+										engine.run(
+											up_interface,
+											commands,
+											logfile=os.path.join(SNIFF_DIR, filename + ".log"),
+											pcap_output=pcap_path,
+											pcap_targets=target_ips,
+										)
 
 										snifflog(filename)
 									elif action_snif_sslstrip == "back":

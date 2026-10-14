@@ -32,6 +32,7 @@ under the **GNU General Public License v3 (GPLv3)**.
 Xerosploit-NG relies on the following tools (installed automatically by `install.py`):
 
 - **bettercap v2** (Go) — the MITM engine and HTTP/HTTPS proxy
+- **tcpdump** — reliable packet capture (.pcap) engine
 - **nmap** — network / port scanning
 - **hping3** — Denial of Service module
 - **driftnet** — image sniffing
